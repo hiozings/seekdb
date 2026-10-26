@@ -2701,6 +2701,10 @@ int ObDMLResolver::resolve_table(const ParseNode &parse_tree,
         OZ (resolve_function_table_item(*table_node, table_item));
         break;
       }
+      case T_FILE_TABLE: {
+        OZ (resolve_file_table_item(*table_node, table_item));
+        break;
+      }
       case T_JSON_TABLE_EXPRESSION: {
         OZ (resolve_json_table_item(*table_node, table_item));
         break;
@@ -2885,6 +2889,7 @@ int ObDMLResolver::resolve_using_columns(const ParseNode &using_node, ObIArray<O
 int ObDMLResolver::transfer_using_to_on_expr(JoinedTable *&joined_table)
 {
   int ret = OB_SUCCESS;
+  column_namespace_checker_.set_dml_stmt(get_stmt());
   ObArray<ObQualifiedName> columns;
   JoinedTable *cur_table = joined_table;
   if (OB_ISNULL(params_.expr_factory_)) {
@@ -6777,6 +6782,8 @@ int ObDMLResolver::resolve_function_table_column_item(const TableItem &table_ite
     // do nothing ...
   } else if (NULL != (col_item = stmt->get_column_item(table_item.table_id_, column_name))) {
     //exist, ignore resolve...
+  } else if (table_item.is_file_table()) {
+    ret = OB_ERR_BAD_FIELD_ERROR;
   } else {
     ObSEArray<ColumnItem, 16> col_items;
     OZ (ObResolverUtils::check_function_table_column_exist(table_item,
@@ -6796,6 +6803,9 @@ int ObDMLResolver::resolve_function_table_column_item(const TableItem &table_ite
     if (OB_SUCC(ret) && OB_ISNULL(col_item)) {
       ret = OB_ERR_BAD_FIELD_ERROR;
     }
+  }
+  if (OB_SUCC(ret) && table_item.is_file_table() && col_item != nullptr) {
+    col_item->expr_->set_explicited_reference();
   }
   return ret;
 }
@@ -7475,7 +7485,15 @@ int ObDMLResolver::resolve_function_table_column_item(const TableItem &table_ite
   CK (OB_LIKELY(table_item.is_function_table()));
   CK (OB_NOT_NULL(table_item.function_table_expr_));
   if (OB_SUCC(ret)) {
-    if (table_item.function_table_expr_->get_result_type().is_ext()) {
+    if (table_item.is_file_table()) {
+      for (int64_t i = 0; OB_SUCC(ret) && i < get_stmt()->get_column_size(); ++i) {
+        const ColumnItem *column = get_stmt()->get_column_item(i);
+        if (column->table_id_ == table_item.table_id_) {
+          column->expr_->set_explicited_reference();
+          ret = col_items.push_back(*column);
+        }
+      }
+    } else if (table_item.function_table_expr_->get_result_type().is_ext()) {
       ret = resolve_function_table_column_item_udf(table_item, col_items);
     } else {
       ret = resolve_function_table_column_item_sys_func(table_item, col_items);
@@ -8365,6 +8383,13 @@ int ObDMLResolver::get_columns_from_table_item(const TableItem *table_item, ObIA
     for (int64_t i = 0; OB_SUCC(ret) && i < table_ref->get_select_item_size(); ++i) {
       const SelectItem &select_item = table_ref->get_select_item(i);
       if (OB_FAIL(column_names.push_back(select_item.alias_name_))) {
+      }
+    }
+  } else if (table_item->is_file_table()) {
+    for (int64_t i = 0; OB_SUCC(ret) && i < get_stmt()->get_column_size(); ++i) {
+      const ColumnItem *column = get_stmt()->get_column_item(i);
+      if (column != nullptr && column->table_id_ == table_item->table_id_) {
+        OZ (column_names.push_back(column->column_name_));
       }
     }
   } else if (table_item->is_function_table()) {

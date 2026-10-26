@@ -1,0 +1,11 @@
+SET enable_file_sql=OFF;
+SELECT * FROM read_csv('FILE_SQL_DATA/basic.csv');
+ERROR 0A000: File SQL is disabled; enable_file_sql is required not supported
+SET enable_file_sql=ON;
+SELECT * FROM read_csv('FILE_SQL_DATA/../outside.csv');
+ERROR HY000: Incorrect arguments to FILE_SQL_DATA/../outside.csv: unsafe file path component
+SELECT * FROM glob('/etc/*.csv');
+ERROR HY000: Incorrect arguments to /etc/*.csv: path outside secure_file_priv: prefix not found
+SELECT 1 AS still_running;
+still_running
+1

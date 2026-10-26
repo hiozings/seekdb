@@ -1,0 +1,13 @@
+--source mysql_test/test_suite/file_sql/include/setup.inc
+SET enable_file_sql=OFF;
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+--error 1235
+eval SELECT * FROM read_csv('$file_sql_data_dir/basic.csv');
+SET enable_file_sql=ON;
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+--error 1210
+eval SELECT * FROM read_csv('$file_sql_data_dir/../outside.csv');
+--error 1210
+SELECT * FROM glob('/etc/*.csv');
+SELECT 1 AS still_running;
+--source mysql_test/test_suite/file_sql/include/cleanup.inc

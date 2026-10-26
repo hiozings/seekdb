@@ -1,0 +1,13 @@
+COPY (SELECT id,name,score FROM read_csv('FILE_SQL_DATA/basic.csv') ORDER BY id) TO 'FILE_SQL_DATA/export.csv' (FORMAT CSV,HEADER true,DELIMITER '|',NULL 'nil');
+SELECT * FROM read_csv('FILE_SQL_DATA/export.csv',delimiter=>'|',nullstr=>'nil') ORDER BY id;
+id	name	score
+1	Alice	10
+2	Bob	20
+3	C, D	NULL
+COPY (SELECT 1) TO 'FILE_SQL_DATA/export.csv';
+ERROR HY000: Incorrect arguments to COPY target already exists or cannot be inspected
+COPY (SELECT UNHEX('ff') AS value) TO 'FILE_SQL_DATA/invalid.csv';
+ERROR HY000: Incorrect arguments to File SQL requires valid UTF-8 text
+SELECT COUNT(*) AS no_partial_output FROM glob('FILE_SQL_DATA/invalid.csv');
+no_partial_output
+0

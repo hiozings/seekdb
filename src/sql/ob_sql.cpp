@@ -2364,7 +2364,7 @@ int ObSql::generate_plan(ParseResult &parse_result,
       LOG_ERROR("Failed to alloc physical plan from tc factory", K(ret));
     } else {
       if (NULL != pc_ctx) {
-        pc_ctx->should_add_plan_ = true;
+        pc_ctx->should_add_plan_ = !stmt->get_query_ctx()->has_file_sql_;
       }
     }
 

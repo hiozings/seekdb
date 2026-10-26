@@ -17,6 +17,7 @@
 #define USING_LOG_PREFIX SQL_RESV
 #include "sql/resolver/ddl/ob_explain_resolver.h"
 #include "sql/resolver/ob_resolver.h"
+#include "sql/parser/ob_parser.h"
 
 using namespace oceanbase;
 using namespace sql;
@@ -63,8 +64,42 @@ int ObExplainResolver::resolve(const ParseNode &parse_tree)
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("failed to generate stmt for child stmt");
       } else {
+        if (parse_tree.children_[EXPLAIN_FORMAT] != nullptr &&
+            parse_tree.children_[EXPLAIN_FORMAT]->type_ == T_INT && child_stmt->is_select_stmt() &&
+            static_cast<ObSelectStmt *>(child_stmt)->get_query_ctx()->has_file_sql_) {
+          const ObSelectStmt *select=static_cast<ObSelectStmt *>(child_stmt);
+          ObSqlString text;
+          const char *digits="0123456789abcdef";
+          for (int64_t i=0; OB_SUCC(ret) && i<select->get_select_item_size(); ++i) {
+            const SelectItem &item=select->get_select_item(i);
+            const ObString &name=item.alias_name_.empty()?item.expr_name_:item.alias_name_;
+            if (i>0) {ret=text.append(" UNION ALL ");}
+            if (OB_SUCC(ret)) {ret=text.append("SELECT CAST(X'");}
+            for (int64_t j=0;OB_SUCC(ret)&&j<name.length();++j) {
+              const unsigned char c=name.ptr()[j];char hex[2]={digits[c>>4],digits[c&15]};ret=text.append(hex,2);
+            }
+            if (OB_SUCC(ret)) {
+              ret=text.append_fmt("' AS CHAR CHARACTER SET utf8mb4) AS `Field`, '%s' AS `Type`, 'YES' AS `Null`, '' AS `Key`, NULL AS `Default`, '' AS `Extra`",
+                  ob_obj_type_str(item.expr_->get_data_type()));
+            }
+          }
+          if (OB_SUCC(ret)) {
+            ObParser parser(*allocator_,session_info_->get_sql_mode());
+            ParseResult result;
+            ObStmt *description=nullptr;
+            if (OB_FAIL(parser.parse(text.string(),result))) {}
+            else if (result.result_tree_==nullptr || result.result_tree_->num_child_!=1) {ret=OB_ERR_UNEXPECTED;}
+            else {
+              ObResolver description_resolver(params_);
+              ret=description_resolver.resolve(ObResolver::IS_NOT_PREPARED_STMT,*result.result_tree_->children_[0],description);
+              if (OB_SUCC(ret)) {stmt_=description;}
+            }
+          }
+          return ret;
+        }
         explain_stmt->set_explain_query_stmt(static_cast<ObDMLStmt *>(child_stmt));
         ParseNode *format = parse_tree.children_[EXPLAIN_FORMAT];
+        if (format != nullptr && format->type_ == T_INT) {format = nullptr;}
         if (NULL != format) {
           switch (format->type_) {
           case T_OUTLINE:

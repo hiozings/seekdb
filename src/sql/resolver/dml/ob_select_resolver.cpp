@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "sql/engine/basic/file_scan/file_scan_utils.h"
 #include "sql/resolver/dml/ob_select_resolver.h"
 #include "sql/resolver/dml/ob_del_upd_resolver.h"
 #include "share/ob_time_utility2.h"
@@ -3114,6 +3115,17 @@ int ObSelectResolver::resolve_into_clause(const ParseNode *node)
         } else { // Be compatible with grammar before
           if (OB_FAIL(resolve_into_outfile_without_format(node, *into_item))) {
           }
+        }
+      } else if (T_FILE_COPY == node->type_) {
+        ObString root, options;
+        if (OB_FAIL(check_file_sql_access(*session_info_, root))) {}
+        else if (OB_FAIL(resolve_into_const_node(node->children_[0], into_item->outfile_name_))) {}
+        else if (OB_FAIL(file_sql_options(node->children_[1], *allocator_, options))) {}
+        else {
+          into_item->field_str_.set_varchar(options);
+          into_item->field_str_.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+          get_select_stmt()->get_query_ctx()->has_file_sql_=true;
+          get_select_stmt()->get_query_ctx()->disable_udf_parallel_=true;
         }
       } else if (T_INTO_DUMPFILE  == node->type_) { // into dumpfile
         if (is_in_set_query()) {

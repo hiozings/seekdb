@@ -1,0 +1,18 @@
+--source mysql_test/test_suite/file_sql/include/setup.inc
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+--error 1210
+eval SELECT * FROM read_csv('$file_sql_data_dir/basic.csv',sample_size=1);
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+--error 1210
+eval SELECT * FROM read_csv('$file_sql_data_dir/bad.csv');
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+--error 1210
+eval SELECT * FROM read_json('$file_sql_data_dir/nested.jsonl');
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+--error 1054
+eval SELECT nonexistent FROM read_csv('$file_sql_data_dir/basic.csv');
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+eval SELECT COUNT(*) AS total,COUNT(value) AS nonnull FROM read_csv('$file_sql_data_dir/all_null.csv');
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+eval SELECT COUNT(*) AS total FROM read_csv('$file_sql_data_dir/header_only.csv');
+--source mysql_test/test_suite/file_sql/include/cleanup.inc

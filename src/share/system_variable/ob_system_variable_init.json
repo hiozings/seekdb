@@ -10975,5 +10975,20 @@
     "info_cn": "",
     "background_cn": "",
     "ref_url": ""
+  },
+  "enable_file_sql": {
+    "id": 10754,
+    "name": "enable_file_sql",
+    "default_value": "0",
+    "base_value": "0",
+    "data_type": "bool",
+    "info": "enable local read-only file tables and explicit COPY export",
+    "flags": "GLOBAL | SESSION | INFLUENCE_PLAN | NEED_SERIALIZE",
+    "min_val": "0",
+    "max_val": "1",
+    "publish_version": "1.4.0.0",
+    "info_cn": "启用本地文件 SQL",
+    "background_cn": "默认关闭；文件访问受 secure_file_priv 限制",
+    "ref_url": ""
   }
 }

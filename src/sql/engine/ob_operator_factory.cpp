@@ -16,6 +16,8 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 
+#include "sql/engine/basic/file_scan_op.h"
+#include "sql/engine/basic/file_copy_op.h"
 #include "share/datum/ob_datum_util.h"
 
 #include "ob_operator_factory.h"

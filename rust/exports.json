@@ -11,13 +11,24 @@
       "config_checkers.h": "config_checkers.h",
       "rust/cxx.h": "cxxbridge/include/rust/cxx.h"
     },
-    "deps": ["local"]
+    "deps": [
+      "local"
+    ]
   },
   "local": {
     "crate": "local",
     "headers": {
       "local_bridge.h": "cxxbridge/include/local/src/bridge.rs.h",
       "local/src/bridge.rs.h": "cxxbridge/include/local/src/bridge.rs.h",
+      "rust/cxx.h": "cxxbridge/include/rust/cxx.h"
+    },
+    "deps": []
+  },
+  "file_sql": {
+    "crate": "file-sql",
+    "headers": {
+      "file_sql_bridge.h": "cxxbridge/include/file-sql/src/lib.rs.h",
+      "file-sql/src/lib.rs.h": "cxxbridge/include/file-sql/src/lib.rs.h",
       "rust/cxx.h": "cxxbridge/include/rust/cxx.h"
     },
     "deps": []

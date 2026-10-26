@@ -636,7 +636,7 @@ int ObSqlParameterization::transform_tree(TransformTreeCtx &ctx,
       if (T_QUESTIONMARK == ctx.tree_->type_ && OB_NOT_NULL(ctx.tree_->children_)
           && OB_NOT_NULL(ctx.tree_->children_[0]) && ctx.tree_->children_[0]->type_ == T_CHARSET) {
         ctx.sql_info_->ps_need_parameterized_ = false;
-      } else if (T_INTO_OUTFILE == ctx.tree_->type_) {
+      } else if (T_INTO_OUTFILE == ctx.tree_->type_ || T_FILE_COPY == ctx.tree_->type_ || T_FILE_TABLE == ctx.tree_->type_) {
         ctx.sql_info_->ps_need_parameterized_ = false;
       }
     }

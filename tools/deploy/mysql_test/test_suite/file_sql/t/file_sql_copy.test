@@ -1,0 +1,14 @@
+--source mysql_test/test_suite/file_sql/include/setup.inc
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+eval COPY (SELECT id,name,score FROM read_csv('$file_sql_data_dir/basic.csv') ORDER BY id) TO '$file_sql_data_dir/export.csv' (FORMAT CSV,HEADER true,DELIMITER '|',NULL 'nil');
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+eval SELECT * FROM read_csv('$file_sql_data_dir/export.csv',delimiter=>'|',nullstr=>'nil') ORDER BY id;
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+--error 1210
+eval COPY (SELECT 1) TO '$file_sql_data_dir/export.csv';
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+--error 1210
+eval COPY (SELECT UNHEX('ff') AS value) TO '$file_sql_data_dir/invalid.csv';
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+eval SELECT COUNT(*) AS no_partial_output FROM glob('$file_sql_data_dir/invalid.csv');
+--source mysql_test/test_suite/file_sql/include/cleanup.inc

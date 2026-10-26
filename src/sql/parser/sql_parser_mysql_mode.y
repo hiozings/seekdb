@@ -46,6 +46,11 @@
   ParseNode *display_node = NULL; \
   if (0 != explain_type) { \
     malloc_terminal_node(type_node, result->malloc_pool_, explain_type); \
+  } else if ((no_use) != NULL && (no_use)->value_ == 1) { \
+    malloc_terminal_node(type_node, result->malloc_pool_, T_INT); \
+    type_node->value_ = 1; \
+    type_node->is_hidden_const_ = 1; \
+    type_node->is_forbid_parameter_ = 1; \
   } \
   if (0 != display_type) { \
     malloc_terminal_node(display_node, result->malloc_pool_, display_type); \
@@ -510,6 +515,10 @@ END_P SET_VAR DELIMITER
 %type <node> sys_view_cast_opt
 %type <node> column_list_with_boost with_param_column_ref
 %type <node> es_sql_opt
+%token <non_reserved_keyword> READ_CSV READ_JSON READ_NDJSON READ_PARQUET FILE_GLOB
+%token FILE_NAMED_ARROW
+%type <node> file_table_expr file_reader_name file_named_options file_sql_option
+%type <node> file_copy_stmt file_copy_options file_copy_option_list file_copy_option
 %type <node> hybrid_search_expr hybrid_search_param
 %type <node> vector_similarity_expr vector_similarity_metric
 %type <node> algorithm_opt lock_opt
@@ -556,6 +565,7 @@ opt_end_p:
 /* only preparable statement will set question mark size */
 stmt:
     select_stmt             { $$ = $1; question_mark_issue($$, result); }
+| file_copy_stmt { $$ = $1; question_mark_issue($$, result); }
   | insert_stmt             { $$ = $1; question_mark_issue($$, result); }
   | create_table_stmt       {
     $$ = $1;
@@ -10844,6 +10854,8 @@ tbl_name
 {
   $$ = $1;
 }
+| file_table_expr
+{ $$ = $1; }
 | hybrid_search_expr
 {
   $$ = $1;
@@ -12306,8 +12318,8 @@ explain_or_desc relation_factor opt_desc_column_option
 
 explain_or_desc:
 EXPLAIN {$$ = NULL;}
-| DESCRIBE {$$ = NULL;}
-| DESC  {$$ = NULL;}
+| DESCRIBE {malloc_terminal_node($$, result->malloc_pool_, T_INT); $$->value_ = 1;}
+| DESC  {malloc_terminal_node($$, result->malloc_pool_, T_INT); $$->value_ = 1;}
 ;
 
 explainable_stmt:
@@ -17451,6 +17463,88 @@ UNNEST '(' simple_expr_list ')'
 }
 ;
 
+file_copy_options:
+/* empty */ { $$ = NULL; }
+| '(' file_copy_option_list ')' { merge_nodes($$, result, T_EXPR_LIST, $2); }
+;
+file_copy_option_list:
+file_copy_option { $$ = $1; }
+| file_copy_option_list ',' file_copy_option
+{ malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3); }
+;
+file_copy_option:
+relation_name signed_literal
+{ malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_OPTION, 2, $1, $2); }
+| relation_name relation_name
+{ $2->type_ = T_VARCHAR; $2->is_forbid_parameter_ = 1; malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_OPTION, 2, $1, $2); }
+| NULLX signed_literal
+{ ParseNode *name = NULL; make_name_node(name, result->malloc_pool_, "null"); malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_OPTION, 2, name, $2); }
+;
+file_copy_stmt:
+COPY select_with_parens TO literal file_copy_options
+{
+  $$ = $2;
+  if ($$->children_[PARSE_SELECT_INTO] != NULL || $$->children_[PARSE_SELECT_INTO_EXTRA] != NULL) { yyerror(&@2, result, "COPY query cannot contain INTO"); YYERROR; }
+  malloc_non_terminal_node($$->children_[PARSE_SELECT_INTO_EXTRA], result->malloc_pool_, T_FILE_COPY, 2, $4, $5);
+  $$->children_[PARSE_SELECT_INTO_EXTRA]->is_tree_not_param_ = 1;
+}
+| COPY relation_factor TO literal file_copy_options
+{
+  ParseNode *star = NULL, *project = NULL, *table = NULL;
+  malloc_terminal_node(star, result->malloc_pool_, T_STAR);
+  malloc_non_terminal_node(project, result->malloc_pool_, T_PROJECT_STRING, 1, star);
+  dup_string_to_node(project, result->malloc_pool_, "*");
+  malloc_non_terminal_node(table, result->malloc_pool_, T_ORG, 4, $2, NULL, NULL, NULL);
+  malloc_select_node($$, result->malloc_pool_);
+  merge_nodes($$->children_[PARSE_SELECT_SELECT], result, T_PROJECT_LIST, project);
+  merge_nodes($$->children_[PARSE_SELECT_FROM], result, T_FROM_LIST, table);
+  malloc_non_terminal_node($$->children_[PARSE_SELECT_INTO_EXTRA], result->malloc_pool_, T_FILE_COPY, 2, $4, $5);
+  $$->children_[PARSE_SELECT_INTO_EXTRA]->is_tree_not_param_ = 1;
+}
+;
+
+file_reader_name:
+READ_CSV { make_name_node($$, result->malloc_pool_, "csv"); }
+| READ_JSON { make_name_node($$, result->malloc_pool_, "json"); }
+| READ_NDJSON { make_name_node($$, result->malloc_pool_, "ndjson"); }
+| READ_PARQUET { make_name_node($$, result->malloc_pool_, "parquet"); }
+| FILE_GLOB { make_name_node($$, result->malloc_pool_, "glob"); }
+;
+file_named_options:
+/* empty */ { $$ = NULL; }
+| file_named_options ',' file_sql_option
+{ malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3); }
+;
+file_sql_option:
+relation_name COMP_EQ signed_literal
+{ malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_OPTION, 2, $1, $3); }
+| relation_name FILE_NAMED_ARROW signed_literal
+{ malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_OPTION, 2, $1, $3); }
+;
+file_table_expr:
+file_reader_name '(' literal file_named_options ')'
+{
+  ParseNode *options = NULL;
+  if ($4 != NULL) { merge_nodes(options, result, T_EXPR_LIST, $4); }
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE, 4, $1, $3, options, NULL);
+  $$->is_tree_not_param_ = 1;
+}
+| file_reader_name '(' literal file_named_options ')' relation_name
+{
+  ParseNode *options = NULL;
+  if ($4 != NULL) { merge_nodes(options, result, T_EXPR_LIST, $4); }
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE, 4, $1, $3, options, $6);
+  $$->is_tree_not_param_ = 1;
+}
+| file_reader_name '(' literal file_named_options ')' AS relation_name
+{
+  ParseNode *options = NULL;
+  if ($4 != NULL) { merge_nodes(options, result, T_EXPR_LIST, $4); }
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_TABLE, 4, $1, $3, options, $7);
+  $$->is_tree_not_param_ = 1;
+}
+;
+
 hybrid_search_expr:
 HYBRID_SEARCH '(' literal ',' hybrid_search_param ')'
 {
@@ -18180,6 +18274,11 @@ ACCOUNT
 |       MICRO_INDEX_CLUSTERED
 |       INCONSISTENT 
 |       INDIVIDUAL
+|       READ_CSV
+|       READ_JSON
+|       READ_NDJSON
+|       READ_PARQUET
+|       FILE_GLOB
 |       HYBRID_SEARCH
 ;
 

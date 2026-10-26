@@ -1,0 +1,31 @@
+SELECT @@enable_file_sql;
+@@enable_file_sql
+1
+SELECT id,name,score,active,day FROM read_csv('FILE_SQL_DATA/basic.csv') ORDER BY id;
+id	name	score	active	day
+1	Alice	10	1	2024-02-29
+2	Bob	20	0	2024-03-01
+3	C, D	NULL	1	2024-03-02
+SELECT COUNT(*) AS n,SUM(score) AS total,CAST(AVG(score) AS DECIMAL(8,2)) AS mean FROM read_csv('FILE_SQL_DATA/basic.csv');
+n	total	mean
+3	30	15.00
+SELECT id,label,amount,extra FROM read_json('FILE_SQL_DATA/basic.jsonl') ORDER BY id;
+id	label	amount	extra
+1	first	1	NULL
+3	third	2.5	1
+4	NULL	NULL	NULL
+SELECT id,name,score,active,day,time FROM read_parquet('FILE_SQL_DATA/basic2.parquet') ORDER BY id;
+id	name	score	active	day	time
+1	Alice	10.5	1	2024-02-29	2024-02-29 12:30:15.123456
+2	NULL	20	0	NULL	2024-02-29 12:30:15.123456
+3	C, D	NULL	NULL	2024-03-02	2024-02-29 12:30:15.123456
+4	Four	40.5	1	2024-03-03	2024-02-29 12:30:15.123456
+DESCRIBE SELECT id,name,score FROM read_csv('FILE_SQL_DATA/basic.csv');
+Field	Type	Null	Key	Default	Extra
+id	BIGINT	YES		NULL	
+name	VARCHAR	YES		NULL	
+score	BIGINT	YES		NULL	
+SELECT file FROM glob('FILE_SQL_DATA/basic.*') ORDER BY file;
+file
+FILE_SQL_DATA/basic.csv
+FILE_SQL_DATA/basic.jsonl

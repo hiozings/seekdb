@@ -1,0 +1,8 @@
+--source mysql_test/test_suite/file_sql/include/setup.inc
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+eval SELECT a.id,b.label FROM read_csv('$file_sql_data_dir/basic.csv') AS a LEFT JOIN read_ndjson('$file_sql_data_dir/basic.jsonl') AS b ON a.id=b.id ORDER BY a.id;
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+eval SELECT a.id,b.name FROM read_csv('$file_sql_data_dir/basic.csv') a INNER JOIN read_parquet('$file_sql_data_dir/basic1.parquet') b ON a.id=b.id ORDER BY a.id;
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+eval SELECT /*+ USE_NL(a b) */ COUNT(*) AS matched FROM read_csv('$file_sql_data_dir/basic.csv') a JOIN read_csv('$file_sql_data_dir/basic.csv') b ON a.id=b.id;
+--source mysql_test/test_suite/file_sql/include/cleanup.inc

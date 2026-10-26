@@ -195,6 +195,7 @@ cc_library(
     ),
     deps = _SQL_INTERFACE_NON_SHARE_DEPS + _SQL_PUBLIC_CLOSURE_OBLIB_DEPS + _SQL_PUBLIC_CLOSURE_SHARE_DEPS + [
         "//rust:config_headers",
+        "//rust:file_sql_headers",
         "//src/sql/optimizer:optimizer_public_headers",
         "//src/sql/parser:parser_public_headers",
         "//src/sql/resolver/prepare:resolver_prepare_public_headers",
@@ -243,6 +244,7 @@ cc_library(
         ":sql_retrieval_composition_headers",
         ":sql_runtime_interface",
         "//rust:config_headers",
+        "//rust:file_sql_headers",
         "//src/sql/engine/prepare:engine_prepare_internal_headers",
         "//src/sql/optimizer:optimizer_internal_headers",
         "//src/sql/parser:parser_internal_headers",
@@ -305,6 +307,7 @@ _SQL_RUNTIME_WITHOUT_PASS_UNITY_GROUPS = sql_singleton_unity_groups(
 
 _SQL_RUNTIME_IMPLEMENTATION_DEPS = [
     "//rust:config_headers",
+        "//rust:file_sql_headers",
     ":_textual_sql_map_inputs",
     ":sql_runtime_interface",
     ":sql_runtime_internal_headers",
@@ -403,6 +406,13 @@ cc_library(
     name = "ai_test_headers",
     hdrs = ["engine/expr/ob_expr_ai/ob_ai_func_utils.h", "engine/expr/ob_expr_ai/ob_expr_ai_embed.h"],
     deps = [":sql_runtime_internal_headers", "//src/share:json_access"],
+    testonly = True,
+    visibility = ["//unittest/sql:__subpackages__"],
+)
+
+cc_library(
+    name = "file_sql_test_headers",
+    deps = [":sql_runtime_internal_headers", "//src/sql/parser:sql_parser_driver", "//rust:file_sql_headers"],
     testonly = True,
     visibility = ["//unittest/sql:__subpackages__"],
 )

@@ -32,6 +32,12 @@ public:
         table_name_(),
         access_exprs_() { }
   virtual ~ObLogFunctionTable() {}
+  bool is_file_scan() const {
+    const TableItem *item = get_stmt() == nullptr ? nullptr : get_stmt()->get_table_item_by_id(table_id_);
+    return item != nullptr && item->is_file_table();
+  }
+  const char *get_name() const override { return is_file_scan() ? "FILE_SCAN" : ObLogicalOperator::get_name(); }
+
   void add_values_expr(ObRawExpr* expr) { value_expr_ = expr; }
   const ObRawExpr* get_value_expr() const { return value_expr_; }
   ObRawExpr* get_value_expr() { return value_expr_; }

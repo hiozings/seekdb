@@ -1,0 +1,21 @@
+[package]
+name = "file-sql"
+version = "0.1.0"
+edition = "2021"
+publish = false
+links = "file_sql"
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+[dependencies]
+anyhow = "1"
+cxx = "1"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision", "raw_value"] }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+glob = "0.3"
+parquet = { version = "59", default-features = false, features = ["snap"] }
+bytes = "1"
+[build-dependencies]
+cxx-build = "1"

@@ -1,0 +1,15 @@
+--source mysql_test/test_suite/file_sql/include/setup.inc
+SELECT @@enable_file_sql;
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+eval SELECT id,name,score,active,day FROM read_csv('$file_sql_data_dir/basic.csv') ORDER BY id;
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+eval SELECT COUNT(*) AS n,SUM(score) AS total,CAST(AVG(score) AS DECIMAL(8,2)) AS mean FROM read_csv('$file_sql_data_dir/basic.csv');
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+eval SELECT id,label,amount,extra FROM read_json('$file_sql_data_dir/basic.jsonl') ORDER BY id;
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+eval SELECT id,name,score,active,day,time FROM read_parquet('$file_sql_data_dir/basic2.parquet') ORDER BY id;
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+eval DESCRIBE SELECT id,name,score FROM read_csv('$file_sql_data_dir/basic.csv');
+--replace_result $file_sql_data_dir FILE_SQL_DATA
+eval SELECT file FROM glob('$file_sql_data_dir/basic.*') ORDER BY file;
+--source mysql_test/test_suite/file_sql/include/cleanup.inc

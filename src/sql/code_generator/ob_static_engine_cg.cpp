@@ -16,6 +16,8 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 
+#include "sql/engine/basic/file_scan_op.h"
+#include "sql/engine/basic/file_copy_op.h"
 #include "config_bridge.h"
 #include "ob_static_engine_cg.h"
 #include "sql/optimizer/ob_log_group_by.h"
@@ -5444,6 +5446,20 @@ int ObStaticEngineCG::generate_hybrid_hist_expr_operator(ObAggFunRawExpr &raw_ex
   return ret;
 }
 
+int ObStaticEngineCG::generate_spec(ObLogSelectInto &op, FileCopySpec &spec, const bool in_root_job)
+{
+  int ret=generate_spec(op,static_cast<ObSelectIntoSpec &>(spec),in_root_job);
+  const auto *stmt=static_cast<const ObSelectStmt *>(op.get_stmt());
+  if (OB_SUCC(ret)) {ret=spec.column_names_.init(stmt->get_select_item_size());}
+  for (int64_t i=0;OB_SUCC(ret)&&i<stmt->get_select_item_size();++i) {
+    const SelectItem &item=stmt->get_select_item(i);
+    ObString name;
+    if (OB_FAIL(ob_write_string(phy_plan_->get_allocator(),item.alias_name_.empty()?item.expr_name_:item.alias_name_,name))) {}
+    else {ret=spec.column_names_.push_back(name);}
+  }
+  return ret;
+}
+
 int ObStaticEngineCG::generate_spec(ObLogSelectInto &op, ObSelectIntoSpec &spec,
     const bool in_root_job)
 {
@@ -5487,6 +5503,19 @@ int ObStaticEngineCG::generate_spec(ObLogSelectInto &op, ObSelectIntoSpec &spec,
       spec.parallel_ = op.get_parallel();
       spec.is_overwrite_ = op.get_is_overwrite();
       spec.plan_->need_drive_dml_query_ = true;
+    }
+  }
+  return ret;
+}
+
+int ObStaticEngineCG::generate_spec(ObLogFunctionTable &op, FileScanSpec &spec, const bool in_root_job)
+{
+  int ret = generate_spec(op, static_cast<ObFunctionTableSpec &>(spec), in_root_job);
+  if (OB_SUCC(ret)) { ret = spec.column_indexes_.init(spec.column_exprs_.count()); }
+  for (int64_t i = 0; OB_SUCC(ret) && i < op.get_stmt()->get_column_size(); ++i) {
+    const ColumnItem *column = op.get_stmt()->get_column_item(i);
+    if (column->table_id_ == op.get_table_id() && column->expr_->is_explicited_reference()) {
+      ret = spec.column_indexes_.push_back(column->column_id_ - OB_APP_MIN_COLUMN_ID);
     }
   }
   return ret;
@@ -6104,7 +6133,7 @@ int ObStaticEngineCG::get_phy_op_type(ObLogicalOperator &log_op,
       break;
     }
     case log_op_def::LOG_SELECT_INTO: {
-      type = PHY_SELECT_INTO;
+      type = static_cast<ObLogSelectInto &>(log_op).get_into_type() == T_FILE_COPY ? PHY_FILE_COPY : PHY_SELECT_INTO;
       break;
     }
     case log_op_def::LOG_TOPK: {
@@ -6116,7 +6145,7 @@ int ObStaticEngineCG::get_phy_op_type(ObLogicalOperator &log_op,
       break;
     }
     case log_op_def::LOG_FUNCTION_TABLE: {
-      type = PHY_FUNCTION_TABLE;
+      type = static_cast<const ObLogFunctionTable &>(log_op).is_file_scan() ? PHY_FILE_SCAN : PHY_FUNCTION_TABLE;
       break;
     }
     case log_op_def::LOG_JSON_TABLE: {

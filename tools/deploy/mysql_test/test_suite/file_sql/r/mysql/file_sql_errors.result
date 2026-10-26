@@ -1,0 +1,14 @@
+SELECT * FROM read_csv('FILE_SQL_DATA/basic.csv',sample_size=1);
+ERROR HY000: Incorrect arguments to FILE_SQL_DATA/basic.csv: sample_size only supports -1
+SELECT * FROM read_csv('FILE_SQL_DATA/bad.csv');
+ERROR HY000: Incorrect arguments to FILE_SQL_DATA/bad.csv: CSV record 2: expected 2 fields, got 3
+SELECT * FROM read_json('FILE_SQL_DATA/nested.jsonl');
+ERROR HY000: Incorrect arguments to FILE_SQL_DATA/nested.jsonl: JSONL line 1, field a: nested values not supported
+SELECT nonexistent FROM read_csv('FILE_SQL_DATA/basic.csv');
+ERROR 42S22: Unknown column 'nonexistent' in 'field list'
+SELECT COUNT(*) AS total,COUNT(value) AS nonnull FROM read_csv('FILE_SQL_DATA/all_null.csv');
+total	nonnull
+2	0
+SELECT COUNT(*) AS total FROM read_csv('FILE_SQL_DATA/header_only.csv');
+total
+0
