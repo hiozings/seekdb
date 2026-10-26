@@ -107,7 +107,7 @@ vectors immediately searchable.
   <img src="images/architecture.svg" alt="seekdb async index pipeline architecture" width="720" />
 </div>
 
-The write path commits and returns *without waiting* on index construction.
+The write path commits and returns _without waiting_ on index construction.
 The Change Stream pipeline consumes the redo log asynchronously and updates
 the delta HNSW. Queries hit both delta and snapshot indexes with fine-grained
 read locks — **this is why P99 stays flat under concurrency.**
@@ -204,6 +204,7 @@ docker run -d \
   -v ./data:/var/lib/oceanbase \
   oceanbase/seekdb:latest
 ```
+
 Please refer to the [document](https://github.com/oceanbase/docker-images/blob/main/seekdb/README.md) of this docker image for details.
 
 </details>
@@ -283,7 +284,6 @@ Python developers can access this via SQLAlchemy or any MySQL driver.
 
 </details>
 
-
 ## 📚 Use Cases
 
 <details open>
@@ -307,11 +307,11 @@ Personal assistants · Enterprise automation · Vertical agents · Agent platfor
 
 seekdb's hybrid retrieval + multi-model engine also fits classic AI workloads:
 
-- **📖 RAG & Knowledge Retrieval** — vector + full-text + scalar filters with multi-level access control. *Enterprise QA, customer support, industry insights, personal knowledge bases.*
-- **🔍 Semantic Search** — embedding-based search across text, images, and other modalities. *Product search, text-to-image, image-to-product.*
-- **💻 AI-Assisted Coding** — semantic code search, multi-project isolation, time-travel queries for IDE plugins and code agents. *Local IDEs, web IDEs, design-to-web.*
-- **⬆️ Enterprise Application Intelligence** — MySQL-compatible AI layer for legacy systems, with row/column hybrid storage. *Document intelligence, business insights, finance systems.*
-- **📱 On-Device & Edge AI** — embedded / micro-server modes for resource-constrained devices. *In-vehicle systems, AI education, companion robots, healthcare devices.*
+- **📖 RAG & Knowledge Retrieval** — vector + full-text + scalar filters with multi-level access control. _Enterprise QA, customer support, industry insights, personal knowledge bases._
+- **🔍 Semantic Search** — embedding-based search across text, images, and other modalities. _Product search, text-to-image, image-to-product._
+- **💻 AI-Assisted Coding** — semantic code search, multi-project isolation, time-travel queries for IDE plugins and code agents. _Local IDEs, web IDEs, design-to-web._
+- **⬆️ Enterprise Application Intelligence** — MySQL-compatible AI layer for legacy systems, with row/column hybrid storage. _Document intelligence, business insights, finance systems._
+- **📱 On-Device & Edge AI** — embedded / micro-server modes for resource-constrained devices. _In-vehicle systems, AI education, companion robots, healthcare devices._
 
 </details>
 
@@ -419,3 +419,5 @@ If seekdb is useful to you, **a star helps others find it.** ⭐
 ## 📄 License
 
 seekdb is built by the [OceanBase](https://en.oceanbase.com/) team — the same database engine running in production at Alipay, Taobao, DiDi, Xiaomi, and more. Fully open-source under the [Apache License, Version 2.0](LICENSE).
+
+OB-P:wrga1w4NmC6PoL7eYEXxgA
