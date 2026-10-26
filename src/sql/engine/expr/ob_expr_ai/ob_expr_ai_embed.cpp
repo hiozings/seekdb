@@ -55,7 +55,9 @@ int ObExprAIEmbed::calc_result_typeN(ObExprResType &type,
   } else {
     types_stack[MODEL_IDX].set_calc_type(ObVarcharType);
     types_stack[MODEL_IDX].set_calc_collation_type(CS_TYPE_UTF8MB4_BIN);
-    types_stack[CONTENT_IDX].set_calc_type(ObVarcharType);
+    if (!ob_is_string_type(types_stack[CONTENT_IDX].get_type())) {
+      types_stack[CONTENT_IDX].set_calc_type(ObVarcharType);
+    }
     types_stack[CONTENT_IDX].set_calc_collation_type(CS_TYPE_UTF8MB4_BIN);
     if (param_num == 3) {
       if (ob_is_integer_type(types_stack[DIM_IDX].get_type())) {
@@ -82,9 +84,11 @@ int ObExprAIEmbed::eval_ai_embed(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &re
   ObDatum *arg_dim = nullptr;
   if (expr.arg_cnt_ == 3 ? OB_FAIL(expr.eval_param_value(ctx, arg_model_id, arg_content, arg_dim))
                          : OB_FAIL(expr.eval_param_value(ctx, arg_model_id, arg_content))) {
-  } else if (arg_model_id->is_null() || arg_content->is_null()) {
+  } else if (arg_model_id->is_null()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, model id or content is null");
+    res.set_null();
+  } else if (arg_content->is_null()) {
     res.set_null();
   } else {
     ObEvalCtx::TempAllocGuard tmp_alloc_g(ctx);
@@ -97,7 +101,9 @@ int ObExprAIEmbed::eval_ai_embed(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &re
     query::ObIAiEndpointResolver *endpoint_resolver =
         ::oceanbase::share::server_service<::oceanbase::query::ObIAiEndpointResolver>();
     ObString model_id = arg_model_id->get_string();
-    ObString content = arg_content->get_string();
+    ObString content;
+    ret = ObTextStringHelper::read_real_string_data(ctx.exec_ctx_, temp_allocator, *arg_content,
+        expr.args_[CONTENT_IDX]->datum_meta_, expr.args_[CONTENT_IDX]->obj_meta_.has_lob_header(), content);
     if (model_id.empty() || content.empty()) {
       ret = OB_INVALID_ARGUMENT;
       LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, model id or input is empty");
@@ -108,7 +114,7 @@ int ObExprAIEmbed::eval_ai_embed(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &re
     ObJsonObject *config = nullptr;
     if (OB_FAIL(ret)) {
     } else if (OB_NOT_NULL(arg_dim)) {
-      dim = arg_dim->get_int();
+      dim = arg_dim->is_null() ? 0 : arg_dim->get_int();
       if (dim <= 0) {
         ret = OB_INVALID_ARGUMENT;
         LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, dimension parameter must be a positive integer");
@@ -130,6 +136,89 @@ int ObExprAIEmbed::eval_ai_embed(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &re
       if (OB_FAIL(model.call_dense_embedding(content, config, result))) {
       } else if (OB_FAIL(ObAIFuncUtils::set_string_result(expr, ctx, res, result))) {
       }
+    }
+  }
+  return ret;
+}
+
+
+int ObExprAIEmbed::eval_ai_embed_batch(const ObExpr &expr, ObEvalCtx &ctx,
+                                     const ObBitVector &skip, int64_t batch_size)
+{
+  int ret = OB_SUCCESS;
+  ObEvalCtx::TempAllocGuard temp_guard(ctx);
+  MultimodeAlloctor allocator(temp_guard.get_allocator());
+  ObEvalCtx::BatchInfoScopeGuard batch_guard(ctx);
+  batch_guard.set_batch_size(batch_size);
+  ObBitVector &evaluated = expr.get_evaluated_flags(ctx);
+  ObDatumVector output = expr.locate_expr_datumvector(ctx);
+  struct InputRow { int64_t row; ObString model; ObString content; int64_t dimension; bool sent; };
+  ObArray<InputRow> rows;
+  for (int64_t a = 0; OB_SUCC(ret) && a < expr.arg_cnt_; ++a) {
+    ret = expr.args_[a]->eval_batch(ctx, skip, batch_size);
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < batch_size; ++i) {
+    if (skip.at(i) || evaluated.at(i)) { continue; }
+    batch_guard.set_batch_idx(i);
+    ObDatum *model = expr.args_[MODEL_IDX]->locate_expr_datumvector(ctx).at(i);
+    ObDatum *content = expr.args_[CONTENT_IDX]->locate_expr_datumvector(ctx).at(i);
+    ObDatum *dimension = expr.arg_cnt_ == 3 ? expr.args_[DIM_IDX]->locate_expr_datumvector(ctx).at(i) : nullptr;
+    if (model->is_null()) { ret = OB_INVALID_ARGUMENT;
+    } else if (content->is_null()) {
+      output.at(i)->set_null();
+      evaluated.set(i);
+    } else if (dimension != nullptr && (dimension->is_null() || dimension->get_int() <= 0)) {
+      ret = OB_INVALID_ARGUMENT;
+    } else {
+      InputRow row{i, model->get_string(), ObString(), dimension == nullptr ? 0 : dimension->get_int(), false};
+      if (OB_FAIL(ObTextStringHelper::read_real_string_data(ctx.exec_ctx_, allocator, *content,
+             expr.args_[CONTENT_IDX]->datum_meta_, expr.args_[CONTENT_IDX]->obj_meta_.has_lob_header(), row.content))) {
+      } else if (row.model.empty() || row.content.empty()) { ret = OB_INVALID_ARGUMENT;
+      } else { ret = rows.push_back(row); }
+    }
+  }
+  for (int64_t first = 0; OB_SUCC(ret) && first < rows.count(); ++first) {
+    if (rows.at(first).sent) { continue; }
+    ObArray<ObString> inputs, results;
+    ObArray<int64_t> positions;
+    const ObString model_id = rows.at(first).model;
+    const int64_t dimension = rows.at(first).dimension;
+    ObAIFuncExprInfo *info = nullptr;
+    share::ObAiModelEndpointInfo endpoint;
+    query::ObIAiEndpointResolver *resolver =
+        share::server_service<query::ObIAiEndpointResolver>();
+    if (resolver == nullptr) { ret = OB_ERR_UNEXPECTED; }
+    else if (OB_FAIL(ObAIFuncUtils::get_ai_func_info(allocator, model_id, info))) {}
+    else { ret = resolver->resolve_by_model_name(model_id, allocator, endpoint); }
+    // Dashscope native embeddings support at least ten inputs across supported models.
+    const int64_t request_limit = endpoint.get_provider().case_compare("ALIYUN-DASHSCOPE") == 0 ? 10 : 64;
+    int64_t bytes = 0;
+    // Bound HTTP payloads independently of the SQL vector size. A single large
+    // input remains a single request; it is never split into different rows.
+    for (int64_t i = first; OB_SUCC(ret) && i < rows.count() && inputs.count() < request_limit; ++i) {
+      InputRow &row = rows.at(i);
+      if (row.sent || row.model != model_id || row.dimension != dimension) { continue; }
+      if (!inputs.empty() && bytes + row.content.length() > 1024 * 1024) { break; }
+      if (OB_FAIL(inputs.push_back(row.content))) {}
+      else if (OB_FAIL(positions.push_back(i))) {}
+      else { bytes += row.content.length(); }
+    }
+    ObJsonObject *config = nullptr;
+    if (OB_SUCC(ret) && dimension > 0) {
+      ObJsonInt *value = nullptr;
+      if (OB_FAIL(ObAIFuncJsonUtils::get_json_object(allocator, config))) {}
+      else if (OB_FAIL(ObAIFuncJsonUtils::get_json_int(allocator, dimension, value))) {}
+      else { ret = config->add("dimensions", value); }
+    }
+    if (OB_SUCC(ret)) {
+      ObAIFuncModel model(allocator, *info, endpoint);
+      ret = model.call_dense_embedding_vector_v2(inputs, config, results);
+    }
+    for (int64_t j = 0; OB_SUCC(ret) && j < positions.count(); ++j) {
+      InputRow &row = rows.at(positions.at(j));
+      batch_guard.set_batch_idx(row.row);
+      if (OB_FAIL(ObAIFuncUtils::set_string_result(expr, ctx, *output.at(row.row), results.at(j)))) {}
+      else { row.sent = true; evaluated.set(row.row); }
     }
   }
   return ret;
@@ -170,6 +259,7 @@ int ObExprAIEmbed::cg_expr(ObExprCGCtx &expr_cg_ctx,
 
   if (OB_SUCC(ret)) {
     rt_expr.eval_func_ = ObExprAIEmbed::eval_ai_embed;
+    rt_expr.eval_batch_func_ = ObExprAIEmbed::eval_ai_embed_batch;
   }
   return ret;
 }

@@ -1,0 +1,47 @@
+SELECT AI_COMPLETE('enh_complete',AI_PROMPT('{0}/{0}','hello')) AS repeated;
+repeated
+hello/hello
+SELECT AI_COMPLETE('enh_complete',AI_PROMPT('outer {0}',AI_PROMPT('inner {0}','世界'))) AS nested;
+nested
+outer inner 世界
+SELECT JSON_LENGTH(JSON_EXTRACT(AI_PROMPT('{0}',JSON_ARRAY(1,2)),'$.args[0]')) AS json_argument;
+json_argument
+2
+SELECT AI_COMPLETE('enh_complete','hello',NULL) AS null_config;
+null_config
+hello
+SELECT AI_COMPLETE('enh_complete','hello',JSON_OBJECT('temperature',0.5,'max_tokens',5)) AS config;
+config
+hello
+SELECT JSON_LENGTH(AI_EMBED('enh_embed','hello')) AS default_dimension;
+default_dimension
+4
+SELECT JSON_LENGTH(AI_EMBED('enh_embed','hello',3)) AS explicit_dimension;
+explicit_dimension
+3
+SELECT AI_EMBED('enh_embed',NULL) IS NULL AS null_input;
+null_input
+1
+SELECT AI_EMBED('enh_embed','hello',0);
+ERROR HY000: Incorrect arguments to ai_embed, dimension parameter must be a positive integer
+SELECT id,JSON_LENGTH(AI_EMBED('enh_embed',text_value,3)) AS dim FROM enhancement_inputs ORDER BY id;
+id	dim
+1	3
+2	NULL
+3	3
+4	3
+SELECT AI_COMPLETE('enh_complete',AI_PROMPT('{0}',text_value)) AS text_prompt FROM enhancement_inputs WHERE id=3;
+text_prompt
+ccc
+SELECT JSON_EXTRACT(AI_RERANK('enh_rerank','q','["a","bbb","cc"]'),'$[*].index') AS ranking;
+ranking
+[1, 2, 0]
+SELECT JSON_EXTRACT(AI_RERANK('enh_rerank','q','[{"id":10,"text":"a"},{"id":20,"text":"bbb"},{"id":30,"text":"cc"}]','text'),'$[*].id') AS original_ids;
+original_ids
+[20, 30, 10]
+SELECT AI_COMPLETE('enh_complete','hello') AS ollama_completion;
+ollama_completion
+hello
+SELECT JSON_LENGTH(AI_EMBED('enh_embed','hello')) AS ollama_dimension;
+ollama_dimension
+4

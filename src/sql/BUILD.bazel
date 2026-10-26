@@ -397,3 +397,12 @@ filegroup(
     ],
     tags = ["manual"],
 )
+
+# SQL-owned test seam; tests do not acquire peer-module implementation headers.
+cc_library(
+    name = "ai_test_headers",
+    hdrs = ["engine/expr/ob_expr_ai/ob_ai_func_utils.h", "engine/expr/ob_expr_ai/ob_expr_ai_embed.h"],
+    deps = [":sql_runtime_internal_headers", "//src/share:json_access"],
+    testonly = True,
+    visibility = ["//unittest/sql:__subpackages__"],
+)

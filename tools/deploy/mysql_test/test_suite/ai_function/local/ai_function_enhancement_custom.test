@@ -1,0 +1,57 @@
+# Local contract fixture. Start mock/mock_ai_service.py on port 8000 first.
+connection default;
+--disable_query_log
+--error 0,11112
+CALL DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('enh_complete_ep');
+--error 0,11112
+CALL DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('enh_embed_ep');
+--error 0,11112
+CALL DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('enh_rerank_ep');
+--error 0,11118
+CALL DBMS_AI_SERVICE.DROP_AI_MODEL('enh_complete');
+--error 0,11118
+CALL DBMS_AI_SERVICE.DROP_AI_MODEL('enh_embed');
+--error 0,11118
+CALL DBMS_AI_SERVICE.DROP_AI_MODEL('enh_rerank');
+CALL DBMS_AI_SERVICE.CREATE_AI_MODEL('enh_complete','{"type":"completion","model_name":"local-model"}');
+CALL DBMS_AI_SERVICE.CREATE_AI_MODEL('enh_embed','{"type":"dense_embedding","model_name":"local-model"}');
+CALL DBMS_AI_SERVICE.CREATE_AI_MODEL('enh_rerank','{"type":"rerank","model_name":"local-model"}');
+CALL DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('enh_complete_ep','{"ai_model_name":"enh_complete","provider":"OPENAI","url":"http://127.0.0.1:8000/v1/chat/completions","access_key":"local-test"}');
+CALL DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('enh_embed_ep','{"ai_model_name":"enh_embed","provider":"OPENAI","url":"http://127.0.0.1:8000/v1/embeddings","access_key":"local-test"}');
+CALL DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('enh_rerank_ep','{"ai_model_name":"enh_rerank","provider":"SILICONFLOW","url":"http://127.0.0.1:8000/v1/rerank","access_key":"local-test"}');
+--enable_query_log
+SELECT AI_COMPLETE('enh_complete',AI_PROMPT('{0}/{0}','hello')) AS repeated;
+SELECT AI_COMPLETE('enh_complete',AI_PROMPT('outer {0}',AI_PROMPT('inner {0}','世界'))) AS nested;
+SELECT JSON_LENGTH(JSON_EXTRACT(AI_PROMPT('{0}',JSON_ARRAY(1,2)),'$.args[0]')) AS json_argument;
+SELECT AI_COMPLETE('enh_complete','hello',NULL) AS null_config;
+SELECT AI_COMPLETE('enh_complete','hello',JSON_OBJECT('temperature',0.5,'max_tokens',5)) AS config;
+SELECT JSON_LENGTH(AI_EMBED('enh_embed','hello')) AS default_dimension;
+SELECT JSON_LENGTH(AI_EMBED('enh_embed','hello',3)) AS explicit_dimension;
+SELECT AI_EMBED('enh_embed',NULL) IS NULL AS null_input;
+--error 1210
+SELECT AI_EMBED('enh_embed','hello',0);
+--disable_query_log
+--disable_warnings
+DROP TABLE IF EXISTS enhancement_inputs;
+--enable_warnings
+CREATE TABLE enhancement_inputs(id INT PRIMARY KEY, text_value LONGTEXT);
+INSERT INTO enhancement_inputs VALUES(1,'a'),(2,NULL),(3,'ccc'),(4,'d');
+--enable_query_log
+SELECT id,JSON_LENGTH(AI_EMBED('enh_embed',text_value,3)) AS dim FROM enhancement_inputs ORDER BY id;
+SELECT AI_COMPLETE('enh_complete',AI_PROMPT('{0}',text_value)) AS text_prompt FROM enhancement_inputs WHERE id=3;
+SELECT JSON_EXTRACT(AI_RERANK('enh_rerank','q','["a","bbb","cc"]'),'$[*].index') AS ranking;
+SELECT JSON_EXTRACT(AI_RERANK('enh_rerank','q','[{"id":10,"text":"a"},{"id":20,"text":"bbb"},{"id":30,"text":"cc"}]','text'),'$[*].id') AS original_ids;
+--disable_query_log
+CALL DBMS_AI_SERVICE.ALTER_AI_MODEL_ENDPOINT('enh_complete_ep','{"provider":"oLlAmA","access_key":"","url":"http://127.0.0.1:8000/api/generate"}');
+CALL DBMS_AI_SERVICE.ALTER_AI_MODEL_ENDPOINT('enh_embed_ep','{"provider":"OLLAMA","access_key":"","url":"http://127.0.0.1:8000/api/embed"}');
+--enable_query_log
+SELECT AI_COMPLETE('enh_complete','hello') AS ollama_completion;
+SELECT JSON_LENGTH(AI_EMBED('enh_embed','hello')) AS ollama_dimension;
+--disable_query_log
+DROP TABLE enhancement_inputs;
+CALL DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('enh_complete_ep');
+CALL DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('enh_embed_ep');
+CALL DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('enh_rerank_ep');
+CALL DBMS_AI_SERVICE.DROP_AI_MODEL('enh_complete');
+CALL DBMS_AI_SERVICE.DROP_AI_MODEL('enh_embed');
+CALL DBMS_AI_SERVICE.DROP_AI_MODEL('enh_rerank');
