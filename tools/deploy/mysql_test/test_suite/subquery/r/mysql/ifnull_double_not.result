@@ -1,0 +1,40 @@
+SELECT 1 FROM dual WHERE IFNULL((SELECT FALSE), !(!(1 LIKE "x")));
+1
+SELECT 1 FROM dual WHERE IFNULL((SELECT FALSE), !(1 LIKE "x"));
+1
+SELECT 1 FROM dual WHERE IFNULL(FALSE, !(!(1 LIKE "x")));
+1
+SELECT 1 FROM dual WHERE IFNULL((SELECT TRUE), !(!(1 LIKE "x")));
+1
+1
+SELECT 1 FROM dual WHERE IFNULL((SELECT NULL), !(!(1 LIKE "x")));
+1
+SELECT 1 FROM dual WHERE IFNULL((SELECT NULL), !(!(1 LIKE "1")));
+1
+1
+SELECT 1 FROM dual WHERE IFNULL((SELECT NULL), !(!(NULL LIKE "x")));
+1
+SELECT 1 FROM dual WHERE IFNULL((SELECT FALSE), !(!(!(!(1 LIKE "x")))));
+1
+SELECT 1 FROM dual WHERE IFNULL((SELECT NULL), !(!(!(1 LIKE "x"))));
+1
+1
+SELECT 1 FROM dual WHERE IFNULL((SELECT FALSE), !(!2));
+1
+SELECT 1 FROM dual WHERE IFNULL((SELECT NULL), !(!2));
+1
+1
+SELECT 1 FROM dual WHERE IFNULL((SELECT NULL), !(!(CAST('1' AS CHAR) LIKE "1")));
+1
+1
+CREATE TABLE t_ifnull_double_not (id INT PRIMARY KEY, n TINYINT, s VARCHAR(10));
+INSERT INTO t_ifnull_double_not VALUES (1, 0, 'x'), (2, 1, 'y'), (3, NULL, 'x'), (4, NULL, 'y'), (5, NULL, NULL);
+SELECT id FROM t_ifnull_double_not WHERE IFNULL((SELECT n), !(!(s LIKE 'x'))) ORDER BY id;
+id
+2
+3
+SELECT id FROM t_ifnull_double_not WHERE IFNULL((SELECT n), !(s LIKE 'x')) ORDER BY id;
+id
+2
+4
+DROP TABLE t_ifnull_double_not;

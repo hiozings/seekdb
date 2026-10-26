@@ -2382,7 +2382,12 @@ int ObTransformSimplifyExpr::do_push_not(ObRawExpr *&expr,
       } else if (OB_ISNULL(temp)) {
         ret = OB_ERR_UNEXPECTED;
       } else if (OB_FAIL(temp->formalize(ctx_->session_info_))) {
+      } else if (OB_FAIL(ObRawExprUtils::try_add_cast_expr_above(
+                             expr_factory, ctx_->session_info_, *temp,
+                             expr->get_result_type(), temp))) {
       } else {
+        // NOT returns INT, while boolean-valued operands such as LIKE can
+        // return BIGINT. Keep the original type for already-typed parents.
         expr = temp;
         is_valid = false;
         trans_happened = true;
