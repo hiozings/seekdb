@@ -47,7 +47,7 @@ select ai_prompt(c) from t1;
 drop table t1;
 
 
-# 类型边界：拒绝数值和 BLOB，支持 TEXT/LONGTEXT
+# 类型边界：拒绝数值，支持 TEXT/LONGTEXT 及 BLOB 字符串
 --disable_warnings
 drop table if exists t1;
 --enable_warnings
@@ -60,10 +60,8 @@ insert into t1 values(7, 'AA', 'bb', 'CC', 'dd');
 
 --error 5083
 select ai_prompt(nr) from t1;
---error 5083
 select ai_prompt(a) from t1;
 select ai_prompt(b) from t1;
---error 5083
 select ai_prompt(c) from t1;
 select ai_prompt(d) from t1;
 

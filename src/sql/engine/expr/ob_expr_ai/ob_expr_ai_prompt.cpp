@@ -52,16 +52,14 @@ int ObExprAIPrompt::calc_result_typeN(ObExprResType &type,
   int ret = OB_SUCCESS;
   bool is_null_res = false;
   ObExprResType template_type = types_stack[0];
-  if (!ob_is_string_type(template_type.get_type()) ||
-      (ob_is_text_tc(template_type.get_type()) && template_type.get_collation_type() == CS_TYPE_BINARY)) {
+  if (!ob_is_string_type(template_type.get_type())) {
     ret = OB_ERR_INVALID_TYPE_FOR_OP;
   } else {
     types_stack[0].set_calc_collation_type(CS_TYPE_UTF8MB4_BIN);
   }
 
   for (int64_t i = 1; i < param_num && OB_SUCC(ret); i++) {
-    if (ob_is_string_type(types_stack[i].get_type()) &&
-        !(ob_is_text_tc(types_stack[i].get_type()) && types_stack[i].get_collation_type() == CS_TYPE_BINARY)) {
+    if (ob_is_string_type(types_stack[i].get_type())) {
       types_stack[i].set_calc_collation_type(CS_TYPE_UTF8MB4_BIN);
     } else if (ob_is_json(types_stack[i].get_type())) {
       // Preserve native JSON; it is decoded at evaluation time.
