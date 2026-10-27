@@ -25,8 +25,8 @@ python3 tools/deploy/mysql_test/test_suite/ai_function/mock/mock_ai_service.py -
 ```bash
 deps/3rd/u01/obclient/bin/mysqltest \
   --host=127.0.0.1 --port=12882 --user=root --database=test \
-  --test-file=tools/deploy/mysql_test/test_suite/ai_function/t/ai_function_enhancement.test \
-  --result-file=tools/deploy/mysql_test/test_suite/ai_function/r/mysql/ai_function_enhancement.result
+  --test-file=tools/deploy/mysql_test/test_suite/ai_function/local/ai_function_enhancement_custom.test \
+  --result-file=tools/deploy/mysql_test/test_suite/ai_function/local/ai_function_enhancement_custom.result
 ```
 
 也可在已准备好 OBD 账户和连接变量的环境中使用 `obd.sh mysqltest --suite ai_function`。原有部分 DDL/权限用例依赖 OBD 的 `admin` 账户和初始化变量，不能把裸实例上的缺少账户当作产品失败。
