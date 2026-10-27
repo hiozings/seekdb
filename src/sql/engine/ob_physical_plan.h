@@ -116,6 +116,7 @@ public:
   void set_is_expired(ObPlanExpiredStat expired_stat) { stat_.is_expired_ = expired_stat; }
   void inc_delayed_px_querys();
   bool is_need_trans() const { return is_need_trans_; }
+  common::ObSEArray<uint64_t, 8> ai_column_read_refs_;
   bool is_stmt_modify_trans() const;
   //As there's ObString in phy_hint_,need deep copy
   int set_phy_plan_hint(const ObPhyPlanHint &hint) { return phy_hint_.deep_copy(hint, allocator_); }

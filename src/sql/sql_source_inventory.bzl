@@ -1494,6 +1494,7 @@ SQL_UNITY_GROUPS = [
             "src/sql/resolver/dml/ob_column_namespace_checker.cpp",
             "src/sql/resolver/dml/ob_default_value_utils.cpp",
             "src/sql/resolver/dml/ob_del_upd_resolver.cpp",
+            "src/sql/resolver/dml/ai_column_dml_resolver.cpp",
             "src/sql/resolver/dml/ob_del_upd_stmt.cpp",
             "src/sql/resolver/dml/ob_delete_resolver.cpp",
             "src/sql/resolver/dml/ob_delete_stmt.cpp",

@@ -53,6 +53,7 @@ namespace sqlclient
 class ObISQLConnection;
 }
 }
+namespace transaction { struct ObTxReadSnapshot; }
 namespace observer
 {
 class ObSqlEndTransCb;
@@ -229,7 +230,10 @@ public:
   public:
     ObAuditRecordData audit_record_;
     SessionType session_type_;
-    bool inner_flag_;
+    const transaction::ObTxReadSnapshot *ai_column_read_snapshot_ = nullptr;
+  bool ai_column_internal_ = false; // Native capability, never exposed as a SQL variable.
+  uint64_t ai_column_retry_column_id_ = 0;
+  bool inner_flag_;
     bool is_ignore_stmt_;
     uint64_t db_id_;
     common::ObSqlString db_name_;
@@ -605,6 +609,13 @@ public:
   int get_collation_type_of_names(const ObNameTypeClass type_class, common::ObCollationType &cs_type) const;
   int kill_query();
   int set_query_deadlocked();
+
+  const transaction::ObTxReadSnapshot *get_ai_column_read_snapshot() const { return ai_column_read_snapshot_; }
+  void set_ai_column_read_snapshot(const transaction::ObTxReadSnapshot *value) { ai_column_read_snapshot_ = value; }
+  bool is_ai_column_internal() const { return ai_column_internal_; }
+  void set_ai_column_internal(bool value) { ai_column_internal_ = value; }
+  uint64_t get_ai_column_retry_column_id() const { return ai_column_retry_column_id_; }
+  void set_ai_column_retry_column_id(uint64_t value) { ai_column_retry_column_id_ = value; }
 
   inline void set_inner_session()
   {

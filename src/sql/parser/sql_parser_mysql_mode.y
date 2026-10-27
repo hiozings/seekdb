@@ -264,7 +264,7 @@ END_P SET_VAR DELIMITER
 //-----------------------------reserved keyword end-------------------------------------------------
 %token <non_reserved_keyword>
 //-----------------------------non_reserved keyword begin-------------------------------------------
-        ACCESS ACCOUNT ACTION ACTIVE ADDDATE AFTER AGAINST AGGREGATE AI ALGORITHM ALWAYS ALLOW ANALYSE ANY
+        RETRY ACCESS ACCOUNT ACTION ACTIVE ADDDATE AFTER AGAINST AGGREGATE AI ALGORITHM ALWAYS ALLOW ANALYSE ANY
         APPROX_COUNT_DISTINCT APPROX_COUNT_DISTINCT_SYNOPSIS APPROX_COUNT_DISTINCT_SYNOPSIS_MERGE
         ARRAY ASCII ASIS AT ATTRIBUTE AUTHORS AUTO AUTOEXTEND_SIZE AUTO_INCREMENT AUTO_INCREMENT_CACHE_SIZE
         AVG AVG_ROW_LENGTH ACTIVATE AVAILABILITY ASYNCHRONOUS AUDIT ADMIN AUTO_REFRESH API_MODE APPROX APPROXIMATE ARRAY_AGG ARRAY_FILTER ARRAY_FIRST ARRAY_MAP ARRAY_SORTBY
@@ -425,6 +425,7 @@ END_P SET_VAR DELIMITER
 %type <node> opt_float_precision opt_number_precision
 %type <node> opt_equal_mark opt_default_mark read_only_or_write not not2
 %type <node> int_or_decimal
+%type <node> opt_ai_column_options ai_column_option_list ai_column_option
 %type <node> opt_column_attribute_list column_attribute column_attribute_list opt_column_default_value opt_column_default_value_list
 %type <node> show_stmt from_or_in columns_or_fields database_or_schema index_or_indexes_or_keys opt_from_or_in_database_clause opt_show_condition opt_desc_column_option opt_status opt_storage opt_show_engine check_table_options check_table_option
 %type <node> prepare_stmt stmt_name preparable_stmt
@@ -6148,8 +6149,25 @@ column_attribute_list column_attribute
   $$ = $1;
 }
 
+opt_ai_column_options:
+/* empty */ { $$ = NULL; }
+| WITH '(' ai_column_option_list ')' { merge_nodes($$, result, T_COLUMN_ATTRIBUTES, $3); }
+;
+ai_column_option_list:
+ai_column_option { $$ = $1; }
+| ai_column_option_list ',' ai_column_option { malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3); }
+;
+ai_column_option:
+column_name COMP_EQ STRING_VALUE { malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_OPTION, 2, $1, $3); }
+| column_name COMP_EQ INTNUM { malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_OPTION, 2, $1, $3); }
+;
 column_attribute:
-not NULLX
+AI COLUMN '(' expr ')' opt_ai_column_options
+{
+  dup_expr_string($4, result, @4.first_column, @4.last_column);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN, 2, $4, $6);
+}
+| not NULLX
 {
   (void)($1) ;
   (void)($2) ; /* make bison mute */
@@ -14665,7 +14683,17 @@ relation_factor TO relation_factor
  *
  *****************************************************************************/
 alter_table_stmt:
-alter_with_opt_hint TABLE relation_factor alter_table_actions
+alter_with_opt_hint TABLE relation_factor RETRY AI COLUMN column_definition_ref opt_where
+{
+  (void)$1;
+  malloc_non_terminal_node($$, result->malloc_pool_, T_RETRY_AI_COLUMN, 3, $3, $7, $8);
+}
+| alter_with_opt_hint TABLE relation_factor RETRY AI COLUMN column_definition_ref opt_where ',' alter_table_actions
+{
+  (void)$1;
+  malloc_non_terminal_node($$, result->malloc_pool_, T_RETRY_AI_COLUMN, 4, $3, $7, $8, $10);
+}
+| alter_with_opt_hint TABLE relation_factor alter_table_actions
 {
   ParseNode *table_actions = NULL;
   merge_nodes(table_actions, result, T_ALTER_TABLE_ACTION_LIST, $4);
@@ -17877,6 +17905,7 @@ ACCOUNT
 |       MAP
 |       MASTER
 |       MASTER_AUTO_POSITION
+|       RETRY
 |       MASTER_CONNECT_RETRY
 |       MASTER_DELAY
 |       MASTER_HEARTBEAT_PERIOD

@@ -59,8 +59,18 @@ int ObAiService::init()
   return ret;
 }
 
+int ObAiService::start()
+{
+  return is_inited_ ? ai_column_worker_.start() : OB_NOT_INIT;
+}
+
+void ObAiService::stop() { ai_column_worker_.stop(); }
+void ObAiService::wait() { ai_column_worker_.wait(); }
+
 void ObAiService::destroy()
 {
+  stop();
+  wait();
   is_inited_ = false;
 }
 

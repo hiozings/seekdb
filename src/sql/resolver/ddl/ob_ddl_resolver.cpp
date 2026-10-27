@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "share/schema/ai_column_schema.h"
 #include "config_bridge.h"
 #include "ob_ddl_resolver.h"
 #include "data_plane/blocksstable/ob_index_block_util.h"
@@ -1966,6 +1967,161 @@ int ObDDLResolver::resolve_column_definition(ObColumnSchemaV2 &column,
       }
     }
   }
+  ParseNode *ai_attrs = node->children_[2];
+  bool found_ai = false;
+  for (int64_t i = 0; OB_SUCC(ret) && ai_attrs != nullptr && i < ai_attrs->num_child_; ++i) {
+    if (ai_attrs->children_[i]->type_ == T_AI_COLUMN) {
+      if (found_ai) { ret = OB_INVALID_ARGUMENT; }
+      else { ret = resolve_ai_column(column, ai_attrs->children_[i], table_schema,
+                                    stmt::T_ALTER_TABLE == stmt_->get_stmt_type()); }
+      found_ai = true;
+    }
+  }
+  return ret;
+}
+
+namespace {
+int collect_ai_dependencies(const ParseNode *node, const ObTableSchema &table,
+                            AiColumnInfo &info, bool validate)
+{
+  int ret = OB_SUCCESS;
+  if (node == nullptr) {
+  } else if (node->type_ == T_COLUMN_REF) {
+    const ParseNode *name = node->num_child_ == 3 ? node->children_[2] : nullptr;
+    if (name == nullptr) { ret = OB_INVALID_ARGUMENT; }
+    else {
+      const ObColumnSchemaV2 *dep = table.get_column_schema(ObString(name->str_len_, name->str_value_));
+      if (dep == nullptr) {
+        if (validate) { ret = OB_ERR_BAD_FIELD_ERROR; }
+      } else if (dep->is_ai_column() || dep->is_generated_column() || dep->is_hidden()) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "AI column dependencies on generated, hidden or AI columns");
+      } else {
+        bool found = false;
+        for (int64_t i = 0; i < info.dependency_column_ids_.count(); ++i) {
+          found |= info.dependency_column_ids_.at(i) == dep->get_column_id();
+        }
+        if (!found) { ret = info.dependency_column_ids_.push_back(dep->get_column_id()); }
+      }
+    }
+  } else if (node->type_ == T_SELECT || node->type_ == T_QUESTIONMARK
+             || node->type_ == T_USER_VARIABLE_IDENTIFIER) {
+    ret = OB_NOT_SUPPORTED;
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < node->num_child_; ++i) {
+      ret = collect_ai_dependencies(node->children_[i], table, info, validate);
+    }
+  }
+  return ret;
+}
+}
+
+int ObDDLResolver::resolve_ai_column(ObColumnSchemaV2 &column, const ParseNode *attribute,
+                                     const ObTableSchema &table, bool validate)
+{
+  int ret = OB_SUCCESS;
+  AiColumnInfo info;
+  const ParseNode *expr = attribute->children_[0];
+  const ParseNode *opts = attribute->children_[1];
+  const ParseNode *name = expr != nullptr && expr->type_ == T_FUN_SYS && expr->num_child_ == 2
+                       ? expr->children_[0] : nullptr;
+  const ParseNode *args = name != nullptr ? expr->children_[1] : nullptr;
+  bool embedding = false;
+  if (name == nullptr || args == nullptr) { ret = OB_NOT_SUPPORTED; }
+  else {
+    ObString function(name->str_len_, name->str_value_);
+    embedding = function.case_compare("ai_embed") == 0;
+    if ((!embedding && function.case_compare("ai_complete") != 0)
+        || args->num_child_ < 2 || args->num_child_ > (embedding ? 3 : 2)
+        || args->children_[0]->type_ != T_VARCHAR) { ret = OB_NOT_SUPPORTED; }
+  }
+  if (OB_SUCC(ret) && (column.is_autoincrement() || column.is_rowkey_column()
+       || !column.is_nullable() || !column.get_cur_default_value().is_null())) {
+    ret = OB_NOT_SUPPORTED;
+  }
+  if (OB_SUCC(ret)) {
+    info.original_expr_.assign_ptr(expr->str_value_, expr->str_len_);
+    info.normalized_expr_ = info.original_expr_;
+    if (embedding != column.is_collection()) { ret = OB_NOT_SUPPORTED; }
+    else if (embedding && args->num_child_ == 3) {
+      int64_t dimension = 0;
+      if (OB_FAIL(ObVectorIndexUtil::get_vector_dim_from_extend_type_info(column.get_extended_type_info(), dimension))) {
+      } else if (args->children_[2]->type_ != T_INT || args->children_[2]->value_ != dimension) {
+        ret = OB_ERR_INVALID_VECTOR_DIM;
+        LOG_USER_ERROR(OB_ERR_INVALID_VECTOR_DIM, static_cast<unsigned>(dimension),
+                       static_cast<unsigned>(args->children_[2]->value_));
+      }
+    }
+  }
+  if (OB_SUCC(ret) && !embedding && !(column.is_string_type() || column.is_json()
+       || ob_is_numeric_type(column.get_data_type()))) { ret = OB_NOT_SUPPORTED; }
+  bool seen_sync = false, seen_retries = false;
+  for (int64_t i = 0; OB_SUCC(ret) && opts != nullptr && i < opts->num_child_; ++i) {
+    const ParseNode *option = opts->children_[i];
+    ObString key(option->children_[0]->str_len_, option->children_[0]->str_value_);
+    const ParseNode *value = option->children_[1];
+    if (key.case_compare("sync_mode") == 0 && !seen_sync) {
+      seen_sync = true;
+      if (value->type_ != T_VARCHAR || ObString(value->str_len_, value->str_value_).case_compare("async") != 0) {
+        ret = OB_NOT_SUPPORTED;
+      }
+    } else if (key.case_compare("max_retries") == 0 && !seen_retries) {
+      seen_retries = true;
+      if (value->type_ != T_INT || value->value_ < 0 || value->value_ > 100) { ret = OB_INVALID_ARGUMENT; }
+      else { info.max_retries_ = value->value_; }
+    } else { ret = OB_INVALID_ARGUMENT; }
+  }
+  if (OB_SUCC(ret)) { ret = collect_ai_dependencies(args->children_[1], table, info, validate); }
+  ObSqlString normalized;
+  if (OB_SUCC(ret) && !embedding) {
+    const char *prompt = column.is_json() ? " Return exactly one valid JSON value."
+      : ob_is_integer_type(column.get_data_type()) ? " Return exactly one base-10 integer."
+      : ob_is_numeric_type(column.get_data_type()) ? " Return exactly one valid decimal number." : nullptr;
+    if (prompt != nullptr) {
+      // The model name is a SQL string literal. Find the first unquoted argument separator.
+      int64_t comma = -1;
+      char quote = 0;
+      const ObString &original = info.original_expr_;
+      for (int64_t i = 0; i < original.length() && comma < 0; ++i) {
+        char ch = original.ptr()[i];
+        if (quote != 0) {
+          if (ch == '\\') { ++i; }
+          else if (ch == quote) {
+            if (i + 1 < original.length() && original.ptr()[i + 1] == quote) { ++i; }
+            else { quote = 0; }
+          }
+        } else if (ch == '\'' || ch == '"' || ch == '`') { quote = ch; }
+        else if (ch == ',') { comma = i; }
+      }
+      if (comma < 0 || original.length() < comma + 2) { ret = OB_INVALID_ARGUMENT; }
+      else if (OB_FAIL(normalized.append_fmt("%.*s concat(%.*s, '%s'))",
+                 static_cast<int>(comma + 1), original.ptr(),
+                 static_cast<int>(original.length() - comma - 2), original.ptr() + comma + 1, prompt))) {
+      } else { info.normalized_expr_ = normalized.string(); }
+    }
+  }
+  if (OB_SUCC(ret) && column.is_ai_column()) {
+    AiColumnInfo old;
+    if (OB_FAIL(get_ai_column_info(column, old))) {}
+    else {
+      info.state_column_id_ = old.state_column_id_;
+      info.request_column_id_ = old.request_column_id_;
+      info.result_spec_column_id_ = old.result_spec_column_id_;
+      info.definition_version_ = old.definition_version_;
+    }
+  }
+  const ObColumnSchemaV2 *prior = table.get_column_schema(column.get_column_name_str());
+  if (OB_SUCC(ret) && prior != nullptr && prior != &column && prior->is_ai_column()) {
+    AiColumnInfo previous;
+    if (OB_FAIL(get_ai_column_info(*prior, previous))) {}
+    else {
+      info.state_column_id_ = previous.state_column_id_;
+      info.request_column_id_ = previous.request_column_id_;
+      info.result_spec_column_id_ = previous.result_spec_column_id_;
+      info.definition_version_ = previous.definition_version_ + 1;
+    }
+  }
+  if (OB_SUCC(ret)) { ret = set_ai_column_info(column, info); }
   return ret;
 }
 
@@ -2164,6 +2320,7 @@ int ObDDLResolver::resolve_normal_column_attribute(ObColumnSchemaV2 &column,
           resolve_stat.is_autoincrement_ = true;
         }
         break;
+      case T_AI_COLUMN: { break; }
       case T_COMMENT:{
         if (attr_node->num_child_ != 1
             || OB_ISNULL(attr_node->children_[0])

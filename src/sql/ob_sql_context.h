@@ -550,6 +550,8 @@ public:
 struct ObQueryCtx
 {
 public:
+  // Alternating schema table/column IDs captured before expression rewriting.
+  common::ObSEArray<uint64_t, 8> ai_column_read_refs_;
   ObQueryCtx()
     : question_marks_count_(0),
       calculable_items_(),
@@ -595,6 +597,7 @@ public:
 
   void reset()
   {
+    ai_column_read_refs_.reset();
     question_marks_count_ = 0;
     calculable_items_.reset();
     fetch_cur_time_ = true;

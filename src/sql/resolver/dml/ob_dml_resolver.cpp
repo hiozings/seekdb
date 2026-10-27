@@ -1833,6 +1833,8 @@ int ObDMLResolver::resolve_basic_column_item(const TableItem &table_item,
                                              ObDMLStmt *stmt /* = NULL */)
 {
   int ret = OB_SUCCESS;
+  const bool explicit_reference = !include_hidden;
+  include_hidden = include_hidden || (session_info_ != NULL && (session_info_->is_ai_column_internal() || session_info_->get_ai_column_retry_column_id() != 0));
   ObColumnRefRawExpr *col_expr = NULL;
   ObSchemaGetterGuard *schema_guard = NULL;
   ColumnItem column_item;
@@ -1957,6 +1959,25 @@ int ObDMLResolver::resolve_basic_column_item(const TableItem &table_item,
       } else if (OB_FAIL(col_expr->pull_relation_id())) {
       } else {
         col_item = stmt->get_column_item(stmt->get_column_size() - 1);
+      }
+    }
+  }
+  if (OB_SUCC(ret) && explicit_reference && col_item != NULL
+      && col_item->expr_ != NULL && (col_item->expr_->get_column_flags() & AI_COLUMN_FLAG) != 0
+      && params_.query_ctx_ != NULL && !session_info_->is_ai_column_internal()
+      && session_info_->get_ai_column_retry_column_id() == 0) {
+    const ObColumnSchemaV2 *schema = NULL;
+    if (OB_FAIL(schema_checker_->get_column_schema(table_item.ref_id_, col_item->column_id_, schema))) {
+    } else if (schema != NULL && schema->is_ai_column()) {
+      auto &refs = params_.query_ctx_->ai_column_read_refs_;
+      bool found = false;
+      for (int64_t i = 0; i + 1 < refs.count(); i += 2) {
+        found |= refs.at(i) == table_item.ref_id_ && refs.at(i + 1) == col_item->column_id_;
+      }
+      if (!found) {
+        if (OB_FAIL(refs.push_back(table_item.ref_id_))) {
+        } else if (OB_FAIL(refs.push_back(col_item->column_id_))) {
+        }
       }
     }
   }

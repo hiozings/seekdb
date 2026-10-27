@@ -2278,6 +2278,9 @@ typedef enum ObItemType
   T_FILE_TABLE = 4921,
   T_FILE_OPTION = 4922,
   T_FILE_COPY = 4923,
+  T_AI_COLUMN = 4924,
+  T_AI_COLUMN_OPTION = 4925,
+  T_RETRY_AI_COLUMN = 4926,
   T_MAX //Attention: add a new type before T_MAX
 } ObItemType;
 

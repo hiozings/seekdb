@@ -18,6 +18,7 @@
 #define OCEANBASE_OBSERVER_OMT_OB_AI_SERVICE_H_
 
 #include "share/ai_service/ob_ai_service_struct.h"
+#include "observer/ai_service/ai_column_worker.h"
 #include "share/rc/ob_server_runtime.h"
 #include "lib/lock/ob_tc_rwlock.h"
 #include "lib/container/ob_se_array.h"
@@ -50,14 +51,15 @@ public:
   virtual ~ObAiService();
   static int server_module_init(ObAiService* &ai_service);
   int init();
-  int start() { return OB_SUCCESS; }
-  void stop() {};
-  void wait() {};
+  int start();
+  void stop();
+  void wait();
   void destroy();
 public:
   int get_ai_service_guard(ObAiServiceGuard &ai_service_guard);
 private:
   bool is_inited_;
+  observer::AiColumnWorker ai_column_worker_;
   DISALLOW_COPY_AND_ASSIGN(ObAiService);
 };
 

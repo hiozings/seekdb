@@ -1056,6 +1056,11 @@ int ObSchemaRetrieveUtils::fill_column_schema(const bool check_deleted, T &resul
       } else {}
     }
 
+    if (OB_SUCC(ret) && column.is_ai_column()) {
+      ObString ai_info;
+      EXTRACT_VARCHAR_FIELD_MYSQL(result, "ai_column_info", ai_info);
+      if (OB_SUCC(ret)) { ret = column.set_ai_column_info_str(ai_info); }
+    }
     if (OB_SUCC(ret) && column.is_generated_column()) {
       bool skip_null_error = true;
       bool skip_column_error = true;

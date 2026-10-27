@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "share/schema/ai_column_schema.h"
 #include "sql/resolver/ddl/ob_create_table_resolver.h"
 #include "sql/resolver/dml/ob_select_resolver.h"
 #include "sql/resolver/ddl/ob_fts_index_builder_util.h"
@@ -891,6 +892,34 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
         } else {
           ObColumnNameHashWrapper name_key(hidden_col.get_column_name_str());
           if (OB_FAIL(column_name_set_.set_refactored(name_key))) {
+          }
+        }
+      }
+    }
+
+    // All user columns now exist, so forward dependencies are validated too.
+    for (int64_t i = 0; OB_SUCC(ret) && resolve_rule != RESOLVE_NON_COL && i < node->num_child_; ++i) {
+      ParseNode *element = node->children_[i];
+      if (element->type_ != T_COLUMN_DEFINITION || element->children_[2] == nullptr) { continue; }
+      ParseNode *attrs = element->children_[2];
+      ParseNode *name = element->children_[0]->children_[2];
+      ObColumnSchemaV2 *result_col = table_schema.get_column_schema(ObString(name->str_len_, name->str_value_));
+      for (int64_t j = 0; OB_SUCC(ret) && j < attrs->num_child_; ++j) {
+        if (attrs->children_[j]->type_ != T_AI_COLUMN) { continue; }
+        AiColumnInfo info;
+        if (OB_ISNULL(result_col)) { ret = OB_ERR_UNEXPECTED; }
+        else if (OB_FAIL(resolve_ai_column(*result_col, attrs->children_[j], table_schema, true))) {}
+        else if (OB_FAIL(get_ai_column_info(*result_col, info))) {}
+        else {
+          info.state_column_id_ = gen_column_id();
+          info.request_column_id_ = gen_column_id();
+          info.result_spec_column_id_ = gen_column_id();
+          if (OB_FAIL(set_ai_column_info(*result_col, info))) {}
+          const uint64_t ids[] = {info.state_column_id_, info.request_column_id_, info.result_spec_column_id_};
+          for (int k = 0; OB_SUCC(ret) && k < 3; ++k) {
+            ObColumnSchemaV2 hidden;
+            if (OB_FAIL(make_ai_hidden_column(*result_col, ids[k], k, hidden))) {}
+            else if (OB_FAIL(table_schema.add_column(hidden))) {}
           }
         }
       }

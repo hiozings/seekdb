@@ -16,6 +16,7 @@
 
 #define USING_LOG_PREFIX RS
 
+#include "share/schema/ai_column_schema.h"
 #include "share/rc/ob_server_runtime.h"
 #include "config_bridge.h"
 #include <algorithm>
@@ -7447,6 +7448,7 @@ int ObDDLService::fill_new_column_attributes(
     new_column_schema.set_nullable(alter_column_schema.is_nullable());
     new_column_schema.set_autoincrement(alter_column_schema.is_autoincrement());
     new_column_schema.set_column_flags(alter_column_schema.get_column_flags());
+    if (OB_FAIL(new_column_schema.set_ai_column_info_str(alter_column_schema.get_ai_column_info_str()))) {}
     new_column_schema.set_comment(alter_column_schema.get_comment_str());
     new_column_schema.set_schema_version(new_schema_version);
     new_column_schema.set_on_update_current_timestamp(
@@ -7775,6 +7777,16 @@ int ObDDLService::add_new_column_to_table_schema(
       new_table_schema.set_max_used_column_id(max_used_column_id);
     }
   }
+  if (OB_SUCC(ret) && alter_column_schema.is_ai_column()) {
+    AiColumnInfo info;
+    if (OB_FAIL(get_ai_column_info(alter_column_schema, info))) {}
+    else {
+      info.state_column_id_ = alter_column_schema.get_column_id() + 1;
+      info.request_column_id_ = alter_column_schema.get_column_id() + 2;
+      info.result_spec_column_id_ = alter_column_schema.get_column_id() + 3;
+      ret = set_ai_column_info(alter_column_schema, info);
+    }
+  }
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(refill_columns_id_for_check_constraint(origin_table_schema,
                                                             alter_table_schema,
@@ -7828,6 +7840,19 @@ int ObDDLService::add_new_column_to_table_schema(
         if (OB_FAIL(ddl_operator->insert_single_column(*trans,
                 new_table_schema, alter_column_schema))) {
         }
+      }
+    }
+  }
+  if (OB_SUCC(ret) && alter_column_schema.is_ai_column()) {
+    for (int k = 0; OB_SUCC(ret) && k < 3; ++k) {
+      AlterColumnSchema hidden;
+      if (OB_FAIL(make_ai_hidden_column(alter_column_schema,
+                       alter_column_schema.get_column_id() + k + 1, k, hidden))) {}
+      else {
+        hidden.alter_type_ = OB_DDL_ADD_COLUMN;
+        ret = add_new_column_to_table_schema(origin_table_schema, alter_table_schema,
+                tz_info_wrap, local_session_var, allocator, new_table_schema, hidden,
+                gen_col_expr_arr, schema_guard, curr_udt_set_id, ddl_operator, trans);
       }
     }
   }

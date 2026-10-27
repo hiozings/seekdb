@@ -16,6 +16,7 @@
 
 #define USING_LOG_PREFIX SQL_RESV
 #include "sql/resolver/ob_resolver.h"
+#include "share/schema/ai_column_schema.h"
 #include "lib/utility/ob_smart_call.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
 #include "sql/resolver/cmd/ob_alter_system_resolver.h"
@@ -137,6 +138,127 @@ int ObResolver::select_stmt_resolver_func(ObResolverParams &params, const ParseN
   return ret;
 }
 
+namespace {
+ParseNode *ai_retry_node(ObIAllocator &alloc, ObItemType type, int children)
+{
+  ParseNode *node = static_cast<ParseNode *>(alloc.alloc(sizeof(ParseNode)));
+  if (node != NULL) {
+    MEMSET(node, 0, sizeof(*node));
+    node->type_ = type;
+    node->num_child_ = children;
+    if (children > 0) {
+      node->children_ = static_cast<ParseNode **>(alloc.alloc(sizeof(ParseNode *) * children));
+      if (node->children_ == NULL) { node = NULL; }
+      else { MEMSET(node->children_, 0, sizeof(ParseNode *) * children); }
+    }
+  }
+  return node;
+}
+
+int ai_retry_status(ParseNode *&node, ObIAllocator &alloc, const ObString &state_name)
+{
+  int ret = OB_SUCCESS;
+  if (node != NULL && node->type_ == T_COLUMN_REF && node->num_child_ == 3
+      && node->children_[0] == NULL && node->children_[1] == NULL
+      && node->children_[2] != NULL && !node->children_[2]->is_input_quoted_
+      && ObString(node->children_[2]->str_len_, node->children_[2]->str_value_).case_compare("status") == 0) {
+    ParseNode *state = ai_retry_node(alloc, T_COLUMN_REF, 3);
+    ParseNode *ident = ai_retry_node(alloc, T_IDENT, 0);
+    ParseNode *result = ai_retry_node(alloc, T_CASE, 3);
+    ParseNode *list = ai_retry_node(alloc, T_WHEN_LIST, 3);
+    ParseNode *otherwise = ai_retry_node(alloc, T_NULL, 0);
+    if (state == NULL || ident == NULL || result == NULL || list == NULL || otherwise == NULL) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else {
+      ident->str_value_ = state_name.ptr();
+      ident->str_len_ = state_name.length();
+      state->children_[2] = ident;
+      result->children_[0] = state;
+      result->children_[1] = list;
+      result->children_[2] = otherwise;
+      const char *names[] = {"PENDING", "READY", "FAILED"};
+      for (int i = 0; OB_SUCC(ret) && i < 3; ++i) {
+        ParseNode *when = ai_retry_node(alloc, T_WHEN, 2);
+        ParseNode *number = ai_retry_node(alloc, T_INT, 0);
+        ParseNode *value = ai_retry_node(alloc, T_VARCHAR, 0);
+        if (when == NULL || number == NULL || value == NULL) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+        } else {
+          number->value_ = i;
+          value->str_value_ = names[i];
+          value->str_len_ = STRLEN(names[i]);
+          when->children_[0] = number;
+          when->children_[1] = value;
+          list->children_[i] = when;
+        }
+      }
+      if (OB_SUCC(ret)) { node = result; }
+    }
+  } else if (node != NULL) {
+    for (int i = 0; OB_SUCC(ret) && i < node->num_child_; ++i) {
+      ret = SMART_CALL(ai_retry_status(node->children_[i], alloc, state_name));
+    }
+  }
+  return ret;
+}
+
+int resolve_ai_column_retry(ObResolverParams &params, const ParseNode &tree, ObStmt *&stmt)
+{
+  int ret = OB_SUCCESS;
+  const share::schema::ObTableSchema *table = NULL;
+  const share::schema::ObColumnSchemaV2 *column = NULL;
+  share::schema::AiColumnInfo info;
+  if (tree.num_child_ != 3) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "combining AI COLUMN RETRY with another ALTER action");
+  } else if (tree.children_[0] == NULL || tree.children_[1] == NULL) {
+    ret = OB_INVALID_ARGUMENT;
+  } else {
+    ParseNode *relation = tree.children_[0];
+    ParseNode *target = tree.children_[1];
+    const ObString database = relation->children_[0] == NULL ? params.session_info_->get_database_name()
+      : ObString(relation->children_[0]->str_len_, relation->children_[0]->str_value_);
+    const ObString name(relation->children_[1]->str_len_, relation->children_[1]->str_value_);
+    const ObString col_name(target->children_[2]->str_len_, target->children_[2]->str_value_);
+    if (OB_FAIL(params.schema_checker_->get_table_schema(database, name, false, table))) {
+    } else if (table == NULL || (column = table->get_column_schema(col_name)) == NULL || !column->is_ai_column()) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "retrying a column that is not an AI column");
+    } else if (OB_FAIL(share::schema::get_ai_column_info(*column, info))) {
+    } else {
+      const auto *state = table->get_column_schema(info.state_column_id_);
+      ParseNode *update = ai_retry_node(*params.allocator_, T_UPDATE, 11);
+      ParseNode *tables = ai_retry_node(*params.allocator_, T_TABLE_REFERENCES, 1);
+      ParseNode *assignments = ai_retry_node(*params.allocator_, T_ASSIGN_LIST, 1);
+      ParseNode *assignment = ai_retry_node(*params.allocator_, T_ASSIGN_ITEM, 2);
+      ParseNode *value = ai_retry_node(*params.allocator_, T_NULL, 0);
+      if (state == NULL || update == NULL || tables == NULL || assignments == NULL || assignment == NULL || value == NULL) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+      } else {
+        tables->children_[0] = relation;
+        assignments->children_[0] = assignment;
+        assignment->children_[0] = target;
+        assignment->children_[1] = value;
+        update->children_[ObUpdateResolver::TABLE] = tables;
+        update->children_[ObUpdateResolver::UPDATE_LIST] = assignments;
+        update->children_[ObUpdateResolver::WHERE] = tree.children_[2];
+        if (OB_FAIL(ai_retry_status(update->children_[ObUpdateResolver::WHERE], *params.allocator_, state->get_column_name_str()))) {
+        } else {
+          const uint64_t old_target = params.session_info_->get_ai_column_retry_column_id();
+          params.session_info_->set_ai_column_retry_column_id(column->get_column_id());
+          HEAP_VAR(ObUpdateResolver, resolver, params) {
+            ret = SMART_CALL(resolver.resolve(*update));
+            stmt = resolver.get_basic_stmt();
+          }
+          params.session_info_->set_ai_column_retry_column_id(old_target);
+        }
+      }
+    }
+  }
+  return ret;
+}
+}
+
 int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObStmt *&stmt)
 {
 #define REGISTER_STMT_RESOLVER(name)                                   \
@@ -178,6 +300,10 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
     switch (real_parse_tree->type_) {
       case T_CREATE_TABLE: {
         REGISTER_STMT_RESOLVER(CreateTable);
+        break;
+      }
+      case T_RETRY_AI_COLUMN: {
+        ret = resolve_ai_column_retry(params_, parse_tree, stmt);
         break;
       }
       case T_ALTER_TABLE: {

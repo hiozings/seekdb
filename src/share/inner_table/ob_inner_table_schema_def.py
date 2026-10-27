@@ -342,7 +342,8 @@ all_column_def = dict(
       ('sub_data_type', 'int', 'false', '0'),
       ('skip_index_attr', 'int', 'false', '0'),
       ('lob_chunk_size', 'int', 'false', 'OB_DEFAULT_LOB_CHUNK_SIZE'),
-      ('local_session_vars', 'longtext', 'true')
+      ('local_session_vars', 'longtext', 'true'),
+      ('ai_column_info', 'varbinary:OB_MAX_VARBINARY_LENGTH', 'true')
   ]
   )
 
@@ -2466,6 +2467,41 @@ all_objauth_mysql_def = dict(
   )
 def_table_schema(**all_objauth_mysql_def)
 def_table_schema(**gen_history_table_def(1134, all_objauth_mysql_def))
+
+# Async AI columns and their transactionally enqueued durable work.
+def_table_schema(
+    owner='ai-column', table_name='__all_ai_column', table_id='1135',
+    table_type='SYSTEM_TABLE', gm_columns=['gmt_create', 'gmt_modified'],
+    is_cluster_private=False, meta_record_in_sys=False,
+    rowkey_columns=[('table_id', 'int'), ('column_id', 'int')],
+    normal_columns=[
+        ('column_name', 'varchar:OB_MAX_COLUMN_NAME_LENGTH', 'false'),
+        ('original_expr', 'longtext', 'false'),
+        ('normalized_expr', 'longtext', 'false'),
+        ('dependency_column_ids', 'longtext', 'false'),
+        ('sync_mode', 'varchar:16', 'false', 'async'),
+        ('max_retries', 'int', 'false', '3'),
+        ('definition_version', 'int', 'false'),
+        ('state_column_id', 'int', 'false'),
+        ('request_column_id', 'int', 'false'),
+        ('result_spec_column_id', 'int', 'false')])
+
+def_table_schema(
+    owner='ai-column', table_name='__all_ai_column_task', table_id='1136',
+    table_type='SYSTEM_TABLE', gm_columns=['gmt_create', 'gmt_modified'],
+    is_cluster_private=False, meta_record_in_sys=False,
+    rowkey_columns=[('table_id', 'int'), ('column_id', 'int'),
+                    ('request_id', 'varchar:128'), ('rowkey_predicate', 'varchar:2048')],
+    normal_columns=[
+        ('definition_version', 'int', 'false'),
+        ('eligible_ts', 'timestamp:6', 'false'),
+        ('state', 'int', 'false', '0'),
+        ('retry_count', 'int', 'false', '0'),
+        ('owner_token', 'varchar:128', 'false', ''),
+        ('lease_until', 'int', 'false', '0'),
+        ('result_payload', 'longtext', 'true'),
+        ('error_code', 'int', 'false', '0')])
+
 
 
 # Reserved position (placeholder before this line)

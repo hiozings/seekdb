@@ -511,6 +511,7 @@ int ObDelUpdResolver::resolve_additional_assignments(ObIArray<ObTableAssignment>
     } else if (OB_ISNULL(table_schema)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("fail to get table schema", KPC(table_item), K(table_schema));
+    } else if (OB_FAIL(resolve_ai_column_assignments(assigns.at(i), *table_item, *table_schema))) {
     } else if (OB_FAIL(table_schema->has_before_update_row_trigger(*schema_guard, trigger_exist))) {
     } else if (OB_FAIL(generate_wrapper_expr_for_assignemnts(assigns.at(i).assignments_, trigger_exist))) {
     } else if (OB_FAIL(check_update_vector_col_with_vector_index(table_schema,
@@ -1829,6 +1830,7 @@ int ObDelUpdResolver::generate_column_conv_function(ObInsertTableInfo &table_inf
       }
     } //end for
   }
+  if (OB_SUCC(ret)) { ret = resolve_ai_column_insert(table_info); }
   return ret;
 }
 
