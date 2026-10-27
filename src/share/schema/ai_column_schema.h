@@ -2,7 +2,7 @@
 #pragma once
 #include "share/schema/ob_column_schema.h"
 #include "lib/container/ob_se_array.h"
-#include "lib/allocator/ob_arena_allocator.h"
+#include "lib/allocator/page_arena.h"
 
 namespace oceanbase { namespace share { namespace schema {
 // Strings returned by get_ai_column_info borrow storage from the column schema.
