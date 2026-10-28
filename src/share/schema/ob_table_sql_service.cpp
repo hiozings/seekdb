@@ -67,6 +67,25 @@ int write_ai_column_metadata(ObISQLClient &client, const ObColumnSchemaV2 &colum
   }
   return ret;
 }
+// ALTER creates a durable backfill obligation in the same schema transaction.
+// Empty predicates are reserved for these jobs; ordinary row predicates are nonempty.
+int enqueue_ai_column_backfill(ObISQLClient &client, const ObColumnSchemaV2 &column)
+{
+  int ret = OB_SUCCESS;
+  if (column.is_ai_column()) {
+    AiColumnInfo info;
+    ObSqlString sql;
+    int64_t affected = 0;
+    if (OB_FAIL(get_ai_column_info(column, info))) {}
+    else if (OB_FAIL(sql.append_fmt(
+        "INSERT IGNORE INTO oceanbase.__all_ai_column_task "
+        "(table_id,column_id,request_id,rowkey_hash,rowkey_predicate,definition_version,eligible_ts,state,retry_count,owner_token,lease_until,error_code) "
+        "VALUES (%lu,%lu,'ddl:%ld',SHA2('',256),'',%ld,NOW(6),0,0,'',0,0)",
+        column.get_table_id(), column.get_column_id(), info.definition_version_, info.definition_version_))) {}
+    else { ret = client.write(sql.ptr(), affected); }
+  }
+  return ret;
+}
 int write_ai_table_metadata(ObISQLClient &client, const ObTableSchema &table)
 {
   int ret = OB_SUCCESS;
@@ -972,6 +991,7 @@ int ObTableSqlService::insert_single_column(
     if (OB_FAIL(log_operation_wrapper(opt, sql_client))) {
     }
   }
+  if (OB_SUCC(ret)) { ret = enqueue_ai_column_backfill(sql_client, new_column_schema); }
   return ret;
 }
 
@@ -1054,6 +1074,17 @@ int ObTableSqlService::update_single_column(
   }
 
   if (OB_SUCC(ret)) { ret = write_ai_column_metadata(sql_client, new_column_schema, table_id); }
+  if (OB_SUCC(ret) && new_column_schema.is_ai_column()) {
+    const auto *old_column = origin_table_schema.get_column_schema(new_column_schema.get_column_id());
+    AiColumnInfo current, previous;
+    if (OB_FAIL(get_ai_column_info(new_column_schema, current))) {}
+    else if (old_column == nullptr || !old_column->is_ai_column()) {
+      ret = enqueue_ai_column_backfill(sql_client, new_column_schema);
+    } else if (OB_FAIL(get_ai_column_info(*old_column, previous))) {}
+    else if (current.definition_version_ != previous.definition_version_) {
+      ret = enqueue_ai_column_backfill(sql_client, new_column_schema);
+    }
+  }
   return ret;
 }
 

@@ -9,7 +9,7 @@ def generate(destination):
     import pyarrow as pa
     import pyarrow.parquet as pq
     destination.mkdir(parents=True, exist_ok=True)
-    source=Path(__file__).parent.parent/'local'
+    source=Path(__file__).parent
     for name in ['basic.csv','basic.jsonl']:
         shutil.copyfile(source/name,destination/name)
     table=pa.table({'id':pa.array([1,2,3,4],type=pa.int64()),

@@ -1,6 +1,6 @@
 --source mysql_test/test_suite/file_sql/include/setup.inc
 --replace_result $file_sql_data_dir FILE_SQL_DATA
---error 1210
+--error 1235
 eval SELECT * FROM read_csv('$file_sql_data_dir/basic.csv',sample_size=1);
 --replace_result $file_sql_data_dir FILE_SQL_DATA
 --error 1210

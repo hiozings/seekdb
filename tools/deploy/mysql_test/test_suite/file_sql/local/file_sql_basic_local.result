@@ -21,10 +21,10 @@ id	name	score	active	day	time
 3	C, D	NULL	NULL	2024-03-02	2024-02-29 12:30:15.123456
 4	Four	40.5	1	2024-03-03	2024-02-29 12:30:15.123456
 DESCRIBE SELECT id,name,score FROM read_csv('FILE_SQL_DATA/basic.csv');
-Field	Type	Null	Key	Default	Extra
-id	BIGINT	YES		NULL	
-name	VARCHAR	YES		NULL	
-score	BIGINT	YES		NULL	
+column_name	column_type	null	key	default	extra
+id	BIGINT	NO	NULL	NULL	NULL
+name	VARCHAR	NO	NULL	NULL	NULL
+score	BIGINT	YES	NULL	NULL	NULL
 SELECT file FROM glob('FILE_SQL_DATA/basic.*') ORDER BY file;
 file
 FILE_SQL_DATA/basic.csv

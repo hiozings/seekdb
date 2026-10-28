@@ -1098,6 +1098,14 @@ int ObDelUpdResolver::add_all_column_to_updatable_view(ObDMLStmt &stmt,
 bool ObDelUpdResolver::need_all_columns(const ObTableSchema &table_schema,
                                         const int64_t binlog_row_image)
 {
+  // AI task production compares old/new hidden request values after DAS succeeds.
+  // Retain these even with NOBLOB row images and unrelated-column updates.
+  for (auto it = table_schema.column_begin(); it != table_schema.column_end(); ++it) {
+    if ((*it)->is_ai_column()) {
+      get_stmt()->get_query_ctx()->disable_udf_parallel_ = true;
+      return true;
+    }
+  }
   // Returns true for MINIMAL too because the optimizer currently needs full rows.
   return (table_schema.is_table_without_pk() ||
           table_schema.get_foreign_key_infos().count() > 0 ||

@@ -13,6 +13,8 @@ TEST(FileSqlParser, ReadDiscoverDescribeCopy)
         "SELECT * FROM read_ndjson('/tmp/a.jsonl')", "SELECT file FROM glob('/tmp/*.csv')",
         "DESCRIBE SELECT * FROM read_csv('/tmp/a.csv')",
         "COPY test_table TO '/tmp/out.csv' (FORMAT CSV, HEADER true, NULL 'nil')",
+        "COPY test_table TO '/tmp/out.csv' (FORMAT CSV, HEADER, NULLSTR 'NULL')",
+        "SELECT * FROM read_json('/tmp/a.jsonl', format='newline_delimited')",
         "COPY (SELECT id FROM read_csv('/tmp/a.csv')) TO '/tmp/out.csv' (DELIMITER '|', QUOTE "
         "'\"', ESCAPE '\"')"})
   {
@@ -28,7 +30,8 @@ TEST(FileSqlParser, ReadDiscoverDescribeCopy)
 TEST(FileSqlParser, MalformedAndOrdinarySql)
 {
   for (const char *sql : {"SELECT * FROM read_csv()", "COPY t FROM '/tmp/in.csv'",
-                          "SELECT * FROM read_csv('/tmp/a',header=>)"})
+                          "SELECT * FROM read_csv('/tmp/a',header=>)",
+                          "COPY t TO '/tmp/out.csv' (FORMAT)"})
   {
     ObArenaAllocator alloc;
     ObParser parser(alloc, 0);

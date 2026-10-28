@@ -1,5 +1,5 @@
 SELECT * FROM read_csv('FILE_SQL_DATA/basic.csv',sample_size=1);
-ERROR HY000: Incorrect arguments to FILE_SQL_DATA/basic.csv: sample_size only supports -1
+ERROR 0A000: File SQL sample_size other than -1 not supported
 SELECT * FROM read_csv('FILE_SQL_DATA/bad.csv');
 ERROR HY000: Incorrect arguments to FILE_SQL_DATA/bad.csv: CSV record 2: expected 2 fields, got 3
 SELECT * FROM read_json('FILE_SQL_DATA/nested.jsonl');

@@ -1,0 +1,57 @@
+{
+  "date": "2026-10-28",
+  "branch": "feature/competition-evaluation-fixes",
+  "base": "73ba5c852",
+  "official_reference": "5bce9e0",
+  "changes": "uncommitted; no merge or push",
+  "binary_sha256": "d927ff57de816853fbfac5e0e12c5ea70e505748e264820821a9f6110cc903e0",
+  "production_build": {
+    "result": "PASS",
+    "system": "build.sh / CMake release",
+    "log_container": "seekdb-build-1477:/tmp/competition-fixes-build9.log",
+    "command": "cmake --build build_release --target seekdb --parallel 2"
+  },
+  "official_mysqltest": {
+    "result": "PASS",
+    "passed": 9,
+    "failed": 0,
+    "manifest_files": 30,
+    "files_unchanged": true,
+    "evidence_container": "seekdb-official-tests-20261028:/tmp/seekdb-official-juqm80k2",
+    "command": "python3 /work/unittest/competition/run_official.py --port 12883 --socket /tmp/seekdb-competition-validation-v3/run/sql.sock --timeout 180"
+  },
+  "native_ctest": {
+    "result": "PASS",
+    "targets": 8,
+    "command": "ctest --test-dir build_release -L competition --output-on-failure"
+  },
+  "runner_offline": {
+    "result": "PASS",
+    "tests": 9
+  },
+  "unchanged_subsystems_prior_verification": {
+    "rust_tests": 14,
+    "clippy": "PASS -D warnings",
+    "ai_local_mysqltests": 5,
+    "ai_local_checks": 39,
+    "file_local_mysqltests": 5,
+    "file_python_tests": 16,
+    "note": "Local SQL tests ran on build7 before Endpoint metadata addition. Their evidence filenames explicitly distinguish this from final official/build9 results."
+  },
+  "limitations": [
+    "Hidden platform tests and performance scores were not executed.",
+    "AI enhancement uses a generic local protocol fixture; AI COLUMN uses unchanged official Mock.",
+    "AI worker uses one global execution slot; parallel throughput optimization is not claimed.",
+    "Recovery fault injection explicitly expires the lease; it does not measure natural lease wait time."
+  ],
+  "recovery_final": {
+    "result": "PASS",
+    "evidence_container": "seekdb-official-tests-20261028:/tmp/seekdb-ai-recovery-6hkxktla",
+    "calls": 2,
+    "duplicate_calls": 1,
+    "remaining_tasks": 0,
+    "rollback_requests": 0,
+    "regression": "Before fix, worker deleted a durable task while user schema was still loading. Gate recovery/claim on SS_SERVING; same test now passes."
+  },
+  "cleanup": "Temporary Endpoint accounts removed; owned official and recovery database processes stopped."
+}

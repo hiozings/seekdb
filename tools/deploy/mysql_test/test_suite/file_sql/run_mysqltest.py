@@ -12,15 +12,13 @@ parser=argparse.ArgumentParser();parser.add_argument('--record',action='store_tr
 suite=Path(__file__).resolve().parent;repo=Path(__file__).resolve().parents[5]
 port=os.environ.get('FILE_SQL_TEST_PORT','12883')
 socket=os.environ.get('FILE_SQL_TEST_SOCKET','/tmp/seekdb-file-sql-instance/run/sql.sock')
-cases=[(case,suite/'r/mysql'/(case.stem+'.result')) for case in sorted((suite/'t').glob('*.test'))
-       if case.name!='file_sql_basic.test']
-# Self-built cases live in local/ so the official myqltest discovery stays clean.
-cases+=[(case,case.with_suffix('.result')) for case in sorted((suite/'local').glob('*.test'))]
+# Official t/ and data/ contain only official cases and fixtures.
+cases=[(case,case.with_suffix('.result')) for case in sorted((suite/'local').glob('*.test'))]
 failed=[]
 for case,result_file in cases:
     with tempfile.TemporaryDirectory(prefix='seekdb-native-file-tests-') as temporary:
         work=Path(temporary);data=work/'data'
-        control=suite/'data/fixture_control.py'
+        control=suite/'local/fixture_control.py'
         for action in ['setup','cleanup']:
             command=shlex.join([sys.executable,str(control),action,str(data),socket])
             (work/(action+'.inc')).write_text('--exec '+command+'\n')

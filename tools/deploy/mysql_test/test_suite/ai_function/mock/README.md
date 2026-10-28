@@ -36,13 +36,13 @@ Mock 支持 OpenAI Completion/Embedding、Ollama 原生生成/Embedding、Rerank
 ## C++ 单测
 
 ```bash
-./build.py test //unittest/sql/engine/expr:ob_expr_ai_prompt_test \
-  //unittest/sql/engine/expr:test_ob_openai_utils \
-  //unittest/sql/engine/expr:test_ob_ai_rerank \
-  //unittest/sql/engine/expr:test_ob_ai_embed_batch --test_output=errors
+./build.sh release --make -j2
+./build.sh release -DSEEKDB_BUILD_COMPETITION_TESTS=ON
+cmake --build build_release --target competition_unit_tests --parallel 2
+ctest --test-dir build_release -L competition --output-on-failure
 ```
 
-运行 Sanity 版本时添加 `--sanity`，并确保依赖包包含 `devtools/lib64/libsanitypass.so`。
+当前比赛基线采用 `build.sh`/CMake；生产构建不会自动构建测试目标。目标及依赖说明见 [unittest/README.competition.md](../../../../../../unittest/README.competition.md)。上述命令不是 Sanity/ASan 插桩验证。
 
 ## 本地固定的语义
 
@@ -52,17 +52,28 @@ Mock 支持 OpenAI Completion/Embedding、Ollama 原生生成/Embedding、Rerank
 - Rerank 要求返回全部输入的唯一 index，按分数降序、原始 index 升序排序；对象输入保留原始 ID 与字段。
 - 一般 Embedding 请求最多 64 条，Dashscope 原生请求最多 10 条，另按约 1 MiB 原始文本拆分；单条长输入不拆成多行。Prompt 渲染和 HTTP 响应分别限制为 16 MiB；嵌套 Prompt 最深 64 层。
 
-正式评测材料到位后，应核对这些未在题面中完全明确的边界语义。
+上述约定描述自建 Mock 与回归覆盖。比赛分支已包含官方测试，验证官方契约应使用下述官方运行器，不能用这些自建结果代替。
 
-## 本次验证记录（2026-10-26）
+## 历史验证记录（2026-10-26）
 
-基于提交 `911342cd7`，在本地 Linux 容器的专用实例执行：
+基于提交 `911342cd7`，在当时的本地 Linux 容器专用实例执行。以下记录不能证明当前比赛基线构建或官方测试通过：
 
 - 普通 seekdb 构建成功。
 - 4 个 C++ 测试目标、13 个测试通过。
 - 14 组 SQL/Mock 集成测试通过，捕获 98 个请求，最大 Embedding 请求携带 64 条输入。
-- `ai_function_enhancement`、原有 `ai_prompt`、`ai_model_lower_case_name_mysql1`、普通表达式 `func_length` 的 mysqltest 结果比对通过。
+- 当时的自建 `ai_function_enhancement`、自建增强版 `ai_prompt`（现保存在 `ai_function/local/`）、`ai_model_lower_case_name_mysql1`、普通表达式 `func_length` 的 mysqltest 结果比对通过。
 - 连续 30 次网络错误后的恢复测试通过，测试实例文件描述符数量前后均为 18；这不是内存泄漏检测的替代。
 - 独立代码审查指出的模板扫描性能、Dashscope 批量上限和响应校验问题已修复，并增加回归覆盖。
 
-验证限制：当前依赖缺少 `sanity_pass` 插件，`--sanity` 在 Bazel 分析阶段失败，没有运行插桩测试。原有 DDL/权限 mysqltest 依赖 OBD 的 admin 初始化；自动审批拒绝了创建全权限 admin 的准备动作，因此未运行这部分原有用例。新增本地测试已验证 Endpoint 创建/查询调用/修改/删除及预处理语句更新，但不替代原有权限矩阵测试。未调用真实模型，也没有正式评测成绩。
+当时的验证限制：依赖缺少 `sanity_pass` 插件，`--sanity` 在 Bazel 分析阶段失败，没有运行插桩测试。原有 DDL/权限 mysqltest 依赖 OBD 的 admin 初始化；自动审批拒绝了创建全权限 admin 的准备动作，因此未运行这部分原有用例。新增本地测试已验证 Endpoint 创建/查询调用/修改/删除及预处理语句更新，但不替代原有权限矩阵测试。未调用真实模型，也没有正式评测成绩。
+
+## 当前官方用例入口
+
+```bash
+python3 unittest/competition/run_official.py --verify-only
+python3 unittest/competition/run_official.py --port 12883 ai_prompt ai_function_enhancement
+```
+
+该运行器使用官方 `.test` 与 `.result`，保留测试正文和预期结果字节不变；正式执行时只在临时目录复制预期并保存日志。省略用例名可运行九组官方用例，File SQL 需要另外提供正确的 `--socket`。详见 [官方运行器说明](../../../../../../unittest/competition/README.md)。
+
+本目录的 `mock_ai_service.py` 和 `test_ai_sql.py` 仍只服务于自建回归，默认 4 维；不能直接用它们的结果宣称官方 enhancement 通过。官方运行器使用 `unittest/competition/official_ai_fixture.py` 作为本地协议夹具，默认 768 维、显式维度遵循请求，原始请求写入证据目录。运行前端口 8000 必须空闲，数据库和 Mock 共享网络命名空间。这是本地官方测试正文验证入口，不代表真实模型评测成绩。

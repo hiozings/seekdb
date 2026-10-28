@@ -17,6 +17,10 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "ob_table_modify_op.h"
+#include "share/schema/ai_column_schema.h"
+#include "common/timezone/ob_time_convert.h"
+#include <string>
+#include <vector>
 #include "share/ob_autoincrement_service.h"
 #include "query/session/ob_inner_sql_connection_access.h"
 #include "sql/engine/ob_physical_plan.h"
@@ -906,6 +910,168 @@ int ObTableModifyOp::calc_single_table_loc()
     } else {
       get_input()->table_loc_ = table_loc;
       get_input()->tablet_loc_ = table_loc->get_first_tablet_loc();
+    }
+  }
+  return ret;
+}
+
+// Called only after DAS has successfully applied the business rows. Nested SQL uses
+// the external session transaction, so statement errors and savepoints cover both writes.
+int ObTableModifyOp::process_ai_column_tasks(const ObDMLBaseCtDef &ctdef, ObDmlEventType event)
+{
+  int ret = OB_SUCCESS;
+  auto *session = ctx_.get_my_session();
+  if (!ctdef.has_ai_columns_ || session->is_ai_column_internal()) { return ret; }
+  const ObTableSchema *schema = nullptr;
+  const ObDatabaseSchema *database = nullptr;
+  auto *guard = ctx_.get_sql_ctx()->schema_guard_;
+  const uint64_t table_id = ctdef.das_base_ctdef_.index_tid_;
+  if (OB_ISNULL(guard)) { ret = OB_ERR_UNEXPECTED; }
+  else if (OB_FAIL(guard->get_table_schema(table_id, schema))) {}
+  else if (OB_ISNULL(schema)) { ret = OB_ERR_UNEXPECTED; }
+  else if (OB_FAIL(guard->get_database_schema(schema->get_database_id(), database))) {}
+  else if (OB_ISNULL(database)) { ret = OB_ERR_UNEXPECTED; }
+  auto identifier = [](const ObString &name) {
+    std::string out("`");
+    for (int64_t i = 0; i < name.length(); ++i) {
+      if (name.ptr()[i] == '`') { out += '`'; }
+      out += name.ptr()[i];
+    }
+    return out + '`';
+  };
+  auto literal = [](const std::string &value) {
+    static const char hex[] = "0123456789abcdef";
+    std::string out("CONVERT(X'");
+    for (unsigned char c : value) { out += hex[c >> 4]; out += hex[c & 15]; }
+    return out + "' USING utf8mb4)";
+  };
+  auto get_value = [&](const ExprFixedArray &row, uint64_t id, ObObj &value) -> int {
+    int ret = OB_ERR_UNEXPECTED;
+    for (int64_t i = 0; i < ctdef.column_ids_.count(); ++i) {
+      if (ctdef.column_ids_.at(i) == id && i < row.count()) {
+        ObDatum *datum = nullptr;
+        if (OB_FAIL(row.at(i)->eval(eval_ctx_, datum))) {}
+        else { ret = datum->to_obj(value, row.at(i)->obj_meta_); }
+        break;
+      }
+    }
+    return ret;
+  };
+  auto predicate = [&](const ExprFixedArray &row, std::string &out) -> int {
+    int ret = OB_SUCCESS;
+    const auto &keys = schema->get_rowkey_info();
+    if (keys.get_size() == 0) { ret = OB_ERR_UNEXPECTED; }
+    for (int64_t i = 0; OB_SUCC(ret) && i < keys.get_size(); ++i) {
+      uint64_t id = 0;
+      ObObj value;
+      const ObColumnSchemaV2 *column = nullptr;
+      if (OB_FAIL(keys.get_column_id(i, id))) {}
+      else if (OB_ISNULL(column = schema->get_column_schema(id))) { ret = OB_ERR_UNEXPECTED; }
+      else if (OB_FAIL(get_value(row, id, value))) {}
+      else {
+        if (i > 0) { out += " AND "; }
+        out += identifier(column->get_column_name_str()) + " = ";
+        if (value.is_string_type()) {
+          const ObString text = value.get_string();
+          static const char hex[] = "0123456789abcdef";
+          const bool binary = value.get_collation_type() == CS_TYPE_BINARY;
+          if (!binary) { out += "CONVERT("; }
+          out += "X'";
+          for (int64_t j = 0; j < text.length(); ++j) {
+            const unsigned char byte = static_cast<unsigned char>(text.ptr()[j]);
+            out += hex[byte >> 4];
+            out += hex[byte & 15];
+          }
+          out += "'";
+          if (!binary) {
+            const char *charset = ObCharset::charset_name(value.get_collation_type());
+            if (charset == nullptr) { ret = OB_ERR_UNEXPECTED; }
+            else { out += " USING "; out += charset; out += ")"; }
+          }
+        } else {
+          char *buf = nullptr;
+          int64_t len = 0, pos = 0;
+          ObObjPrintParams print_params = obj_print_params_;
+          const bool timestamp = value.get_type() == ObTimestampType
+              && value.get_timestamp() != ObTimeConverter::ZERO_DATETIME;
+          if (timestamp) {
+            // Store the instant in UTC, then convert only the constant RHS to the
+            // reader's zone. Unlike FROM_UNIXTIME, this also handles pre-1970 keys.
+            print_params.tz_info_ = nullptr;
+            print_params.print_const_expr_type_ = false;
+            out += "CONVERT_TZ(";
+          }
+          if (OB_FAIL(value.print_sql_literal(buf, len, pos, ctx_.get_allocator(), print_params))) {}
+          else {
+            out.append(buf, pos);
+            if (timestamp) { out += ", '+00:00', @@session.time_zone)"; }
+          }
+        }
+      }
+    }
+    if (OB_SUCC(ret) && out.size() > 128 * 1024) { ret = OB_SIZE_OVERFLOW; }
+    return ret;
+  };
+  std::vector<std::string> statements;
+  std::string old_key, new_key;
+  const bool deleting = event == ObDmlEventType::DE_DELETING;
+  const bool inserting = event == ObDmlEventType::DE_INSERTING;
+  if (OB_SUCC(ret) && !inserting) { ret = predicate(ctdef.old_row_, old_key); }
+  if (OB_SUCC(ret) && !deleting) { ret = predicate(ctdef.new_row_, new_key); }
+  if (OB_SUCC(ret)) {
+    const std::string table = identifier(database->get_database_name_str()) + "." + identifier(schema->get_table_name_str());
+    const std::string task_table = "oceanbase.__all_ai_column_task";
+    const std::string table_filter = "table_id=" + std::to_string(table_id);
+    if (deleting) {
+      statements.push_back("DELETE FROM " + task_table + " WHERE " + table_filter
+          + " AND rowkey_predicate=" + literal(old_key));
+    } else {
+      for (auto it = schema->column_begin(); OB_SUCC(ret) && it != schema->column_end(); ++it) {
+        const auto *column = *it;
+        if (!column->is_ai_column()) { continue; }
+        AiColumnInfo info;
+        ObObj request, old_request;
+        if (OB_FAIL(get_ai_column_info(*column, info))) {}
+        else if (OB_FAIL(get_value(ctdef.new_row_, info.request_column_id_, request))) {}
+        else if (!inserting && OB_FAIL(get_value(ctdef.old_row_, info.request_column_id_, old_request))) {}
+        else if (request.is_null() || (!inserting && request == old_request)) {
+          // Neither unrelated updates nor no-op dependency assignments create work.
+        } else {
+          const auto *request_column = schema->get_column_schema(info.request_column_id_);
+          if (OB_ISNULL(request_column)) { ret = OB_ERR_UNEXPECTED; break; }
+          const ObString request_text = request.get_string();
+          const std::string request_literal = literal(std::string(request_text.ptr(), request_text.length()));
+          const std::string current = "(" + new_key + ") AND "
+              + identifier(request_column->get_column_name_str()) + "=" + request_literal;
+          const std::string column_filter = table_filter + " AND column_id=" + std::to_string(column->get_column_id());
+          if (!inserting) {
+            statements.push_back("DELETE FROM " + task_table + " WHERE " + column_filter
+                + " AND rowkey_predicate=" + literal(old_key)
+                + " AND request_id<>" + request_literal
+                + " AND EXISTS (SELECT 1 FROM " + table + " WHERE " + current + ")");
+          }
+          // INSERT IGNORE may have discarded this input row. Only its actual stored
+          // request is authoritative, even when the conflicting key is a secondary key.
+          statements.push_back("INSERT INTO " + task_table
+              + " (table_id,column_id,request_id,rowkey_hash,rowkey_predicate,definition_version,eligible_ts,state,retry_count,owner_token,lease_until,error_code) SELECT "
+              + std::to_string(table_id) + "," + std::to_string(column->get_column_id()) + ","
+              + request_literal + ",SHA2(" + literal(new_key) + ",256)," + literal(new_key) + "," + std::to_string(info.definition_version_)
+              + ",NOW(6),0,0,'',0,0 FROM " + table + " WHERE " + current);
+        }
+      }
+    }
+  }
+  if (OB_SUCC(ret) && !statements.empty()) {
+    if (inner_conn_ == nullptr) { ret = open_inner_conn(); }
+    if (OB_SUCC(ret) && OB_SUCC(ret = begin_nested_session(true))) {
+      const bool previous = session->is_ai_column_internal();
+      session->set_ai_column_internal(true);
+      for (size_t i = 0; OB_SUCC(ret) && i < statements.size(); ++i) {
+        ret = execute_write(statements[i].c_str());
+      }
+      session->set_ai_column_internal(previous);
+      const int end_ret = end_nested_session();
+      if (OB_SUCC(ret)) { ret = end_ret; }
     }
   }
   return ret;

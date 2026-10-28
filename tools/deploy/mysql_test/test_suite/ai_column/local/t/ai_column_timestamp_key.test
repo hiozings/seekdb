@@ -1,0 +1,70 @@
+# Local regression: TIMESTAMP PK predicates identify the same instant in every session zone.
+--disable_query_log
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py start 19130
+--disable_warnings
+drop database if exists ai_column_timestamp_key;
+--enable_warnings
+create database ai_column_timestamp_key;
+--error 0,11112
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('timestamp_key_ep');
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL('timestamp_key_model');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('timestamp_key_model', '{"type":"completion","model_name":"mock-complete"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('timestamp_key_ep', '{"ai_model_name":"timestamp_key_model","url":"http://127.0.0.1:19130/v1/chat/completions","access_key":"local-key","provider":"openai","request_model_name":"mock-complete"}');
+create table ai_column_timestamp_key.docs(id timestamp(6) primary key, content varchar(50), result varchar(100) AI COLUMN(AI_COMPLETE('timestamp_key_model',content)) WITH(max_retries=0));
+set session time_zone='+00:00';
+start transaction;
+insert into ai_column_timestamp_key.docs(id,content) values('2026-10-01 12:34:56.123456','clock');
+select count(*)=1 as timestamp_task_is_transactional from oceanbase.__all_ai_column_task task join oceanbase.__all_table t on task.table_id=t.table_id join oceanbase.__all_database d on t.database_id=d.database_id where d.database_name='ai_column_timestamp_key';
+commit;
+set session time_zone='-05:00';
+let $remaining=50;
+let $ready=0;
+while ($remaining)
+{
+ let $ready = `select ifnull(result='mock:clock',0) from ai_column_timestamp_key.docs where id='2026-10-01 07:34:56.123456'`;
+ if ($ready == 1) { let $remaining=0; }
+ if ($ready == 0) { --real_sleep 0.1
+ dec $remaining; }
+}
+eval select $ready=1 as different_timezone_worker_finds_timestamp;
+start transaction;
+update ai_column_timestamp_key.docs set content='pending' where id='2026-10-01 07:34:56.123456';
+select count(*)=1 as timestamp_update_creates_task from oceanbase.__all_ai_column_task task join oceanbase.__all_table t on task.table_id=t.table_id join oceanbase.__all_database d on t.database_id=d.database_id where d.database_name='ai_column_timestamp_key';
+set session time_zone='+09:00';
+delete from ai_column_timestamp_key.docs where id='2026-10-01 21:34:56.123456';
+select count(*)=0 as changed_timezone_delete_cleans_task from oceanbase.__all_ai_column_task task join oceanbase.__all_table t on task.table_id=t.table_id join oceanbase.__all_database d on t.database_id=d.database_id where d.database_name='ai_column_timestamp_key';
+rollback;
+select count(*)=1 as timezone_rollback_restores_ready_row from ai_column_timestamp_key.docs where id='2026-10-01 21:34:56.123456' and result='mock:clock';
+# Native TIMESTAMP also accepts instants before the Unix epoch.
+set session time_zone='+00:00';
+insert into ai_column_timestamp_key.docs(id,content) values('1900-01-01 00:00:00.654321','historic');
+set session time_zone='-05:00';
+let $remaining=50;
+let $ready=0;
+while ($remaining)
+{
+ let $ready = `select ifnull(result='mock:historic',0) from ai_column_timestamp_key.docs where id='1899-12-31 19:00:00.654321'`;
+ if ($ready == 1) { let $remaining=0; }
+ if ($ready == 0) { --real_sleep 0.1
+ dec $remaining; }
+}
+eval select $ready=1 as pre_epoch_timestamp_preserves_microseconds;
+# MySQL's zero timestamp is a sentinel, not an epoch value.
+set session sql_mode='';
+insert into ai_column_timestamp_key.docs(id,content) values('0000-00-00 00:00:00','zero');
+let $remaining=50;
+let $ready=0;
+while ($remaining)
+{
+ let $ready = `select ifnull(result='mock:zero',0) from ai_column_timestamp_key.docs where id='0000-00-00 00:00:00'`;
+ if ($ready == 1) { let $remaining=0; }
+ if ($ready == 0) { --real_sleep 0.1
+ dec $remaining; }
+}
+eval select $ready=1 as zero_timestamp_uses_literal_semantics;
+drop database ai_column_timestamp_key;
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('timestamp_key_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('timestamp_key_model');
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py stop 19130
+--enable_query_log

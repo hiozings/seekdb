@@ -3,15 +3,19 @@
 #include "observer/ai_service/ai_column_worker.h"
 #include "observer/ai_service/ai_column_worker_state.h"
 #include "observer/ob_inner_sql_connection.h"
+#include "observer/ob_inner_sql_result.h"
+#include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "share/ob_server_struct.h"
 #include "common/mysqlclient/ob_mysql_transaction.h"
 #include "common/mysqlclient/ob_mysql_proxy.h"
 #include "share/schema/ai_column_schema.h"
+#include "share/schema/ob_constraint.h"
 #include "share/schema/ob_multi_version_schema_service.h"
 #include "sql/session/ob_sql_session_info.h"
 #include "observer/vector_index/ob_vector_index_util.h"
 #include "lib/time/ob_time_utility.h"
 #include <string>
+#include <algorithm>
 #include <vector>
 #include <cerrno>
 #include <cstdlib>
@@ -29,7 +33,7 @@ const int64_t LEASE_US = 120000000;
 struct Task {
   uint64_t table = 0, column = 0;
   int64_t version = 0, state = 0, retries = 0;
-  std::string request, predicate, owner, payload;
+  std::string request, predicate, rowkey_hash, owner, payload;
   bool null_result = false;
 };
 std::string str(const ObString &s) { return std::string(s.ptr() == nullptr ? "" : s.ptr(), s.length()); }
@@ -54,6 +58,7 @@ std::string identifier(const ObString &s)
 std::string group_key(const Task &t)
 {
   return "table_id=" + number(t.table) + " AND request_id=" + literal(t.request)
+      + " AND rowkey_hash=" + literal(t.rowkey_hash)
       + " AND rowkey_predicate=" + literal(t.predicate);
 }
 std::string task_key(const Task &t) { return group_key(t) + " AND column_id=" + number(t.column); }
@@ -77,20 +82,41 @@ private:
 };
 int get_string(sqlclient::ObMySQLResult &res, const char *field, std::string &out, bool *null_value = nullptr)
 {
-  ObString s;
-  int ret = res.get_varchar(field, s);
-  if (ret == OB_ERR_NULL_VALUE && null_value != nullptr) { *null_value = true; ret = OB_SUCCESS; }
-  else if (ret == OB_SUCCESS) { out = str(s); if (null_value != nullptr) { *null_value = false; } }
+  int ret = OB_SUCCESS;
+  ObObj value;
+  ObString text;
+  ObArenaAllocator allocator("AiColumnRead");
+  if (OB_FAIL(res.get_obj(field, value))) {}
+  else if (value.is_null()) {
+    if (null_value == nullptr) { ret = OB_ERR_NULL_VALUE; }
+    else { *null_value = true; out.clear(); }
+  } else {
+    if (value.is_lob_storage()) {
+      // All worker clients use GCTX's inner SQL proxy. Materialize out-of-row
+      // LONGTEXT with this result's snapshot; get_varchar only exposes in-row data.
+      auto &ctx = static_cast<ObInnerSQLResult &>(res).result_set().get_exec_context();
+      ret = sql::ObTextStringHelper::read_real_string_data(ctx, &allocator, value, text);
+    } else { ret = value.get_string(text); }
+    if (OB_SUCC(ret)) { out = str(text); if (null_value != nullptr) { *null_value = false; } }
+  }
   return ret;
 }
 int read_task(sqlclient::ObMySQLResult &r, Task &t)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(r.get_uint("table_id", t.table)) || OB_FAIL(r.get_uint("column_id", t.column))
-      || OB_FAIL(r.get_int("definition_version", t.version)) || OB_FAIL(r.get_int("state", t.state))
-      || OB_FAIL(r.get_int("retry_count", t.retries)) || OB_FAIL(get_string(r, "request_id", t.request))
-      || OB_FAIL(get_string(r, "rowkey_predicate", t.predicate)) || OB_FAIL(get_string(r, "owner_token", t.owner))
-      || OB_FAIL(get_string(r, "result_payload", t.payload, &t.null_result))) {}
+  int64_t table_id = 0, column_id = 0;
+  // Inner SQL getters preserve ObObj types: signed BIGINT cannot use get_uint.
+  if (OB_FAIL(r.get_int("table_id", table_id)) || OB_FAIL(r.get_int("column_id", column_id))) {}
+  else if (table_id <= 0 || column_id <= 0) { ret = OB_INVALID_ARGUMENT; }
+  else {
+    t.table = static_cast<uint64_t>(table_id);
+    t.column = static_cast<uint64_t>(column_id);
+    if (OB_FAIL(r.get_int("definition_version", t.version)) || OB_FAIL(r.get_int("state", t.state))
+        || OB_FAIL(r.get_int("retry_count", t.retries)) || OB_FAIL(get_string(r, "request_id", t.request))
+        || OB_FAIL(get_string(r, "rowkey_predicate", t.predicate)) || OB_FAIL(get_string(r, "rowkey_hash", t.rowkey_hash))
+        || OB_FAIL(get_string(r, "owner_token", t.owner))
+        || OB_FAIL(get_string(r, "result_payload", t.payload, &t.null_result))) {}
+  }
   return ret;
 }
 int write(ObISQLClient &client, const std::string &sql, int64_t &affected)
@@ -126,14 +152,16 @@ struct Definition {
     }
     return ret;
   }
-  std::string current(const Task &t) const
+  std::string current_request(const Task &t) const
   {
-    return "(" + t.predicate + ") AND " + request_name + "=" + literal(t.request)
+    return request_name + "=" + literal(t.request)
         + " AND " + spec_name + "=" + literal(number(t.version))
         + " AND EXISTS (SELECT 1 FROM oceanbase.__all_ai_column a WHERE a.table_id="
         + number(t.table) + " AND a.column_id=" + number(t.column)
         + " AND a.definition_version=" + number(t.version) + ")";
   }
+  std::string current(const Task &t) const
+  { return "(" + t.predicate + ") AND " + current_request(t); }
 };
 // No permissive numeric conversion: SQL CAST would silently turn bad model text into zero.
 int validate_number(const std::string &value, ObObjType type)
@@ -229,7 +257,7 @@ int evaluate(Task &t, Definition &d)
       if (OB_SUCC(ret) && ob_is_string_type(d.column->get_data_type())
           && d.column->get_data_length() > 0
           && ObCharset::strlen_char(d.column->get_collation_type(), t.payload.data(), t.payload.size()) > d.column->get_data_length()) {
-        ret = OB_DATA_TOO_LONG;
+        ret = OB_ERR_DATA_TOO_LONG;
       }
       if (OB_SUCC(ret) && (d.column->get_data_type() == ObJsonType || d.column->get_data_type() == ObCollectionSQLType)) {
         ObISQLClient::ReadResult res;
@@ -295,6 +323,50 @@ int claim(Task &t, bool &found)
   }
   return ret;
 }
+// Consume only an explicit ALTER job. Spec fencing makes a committed batch
+// idempotent across crashes; native DML creates row tasks in the same transaction.
+int backfill(const Task &job)
+{
+  int ret = OB_SUCCESS;
+  Definition definition;
+  const int definition_ret = definition.resolve(job);
+  const bool stale = definition_ret == OB_ENTRY_NOT_EXIST;
+  if (definition_ret != OB_SUCCESS && !stale) { return definition_ret; }
+  ObMySQLTransaction trans;
+  if (OB_FAIL(trans.start(GCTX.sql_proxy_))) {}
+  else {
+    InternalSessionGuard internal(trans);
+    int64_t changed = 0;
+    if (!stale) {
+      auto &session = static_cast<ObInnerSQLConnection *>(trans.get_connection())->get_session();
+      const uint64_t previous_retry = session.get_ai_column_retry_column_id();
+      session.set_ai_column_retry_column_id(job.column);
+      session.set_ai_column_internal(false);
+      const std::string sql = "UPDATE " + definition.qualified + " SET " + definition.result_name
+          + "=NULL WHERE " + definition.request_name + " IS NULL OR " + definition.spec_name
+          + " IS NULL OR " + definition.spec_name + "<>" + literal(number(job.version)) + " LIMIT 128";
+      ret = write(trans, sql, changed);
+      session.set_ai_column_internal(true);
+      session.set_ai_column_retry_column_id(previous_retry);
+    }
+    if (OB_SUCC(ret)) {
+      int64_t affected = 0;
+      const std::string owned = task_key(job) + " AND state=1 AND owner_token=" + literal(job.owner);
+      if (stale || changed == 0) {
+        ret = write(trans, std::string("DELETE FROM ") + TASKS + " WHERE " + owned, affected);
+      } else {
+        ret = write(trans, std::string("UPDATE ") + TASKS
+            + " SET state=0,eligible_ts=NOW(6),lease_until=0,owner_token='' WHERE " + owned, affected);
+      }
+      if (OB_SUCC(ret) && affected != 1) { ret = OB_EAGAIN; }
+    }
+    internal.restore();
+    const int end_ret = trans.end(OB_SUCC(ret));
+    if (OB_SUCC(ret)) { ret = end_ret; }
+  }
+  return ret;
+}
+
 int finish(const Task &t, int error, int64_t max_retries)
 {
   int ret = OB_SUCCESS;
@@ -310,6 +382,96 @@ int finish(const Task &t, int error, int64_t max_retries)
       + " WHERE " + task_key(t) + " AND state=1 AND owner_token=" + literal(t.owner)
       + " AND lease_until>" + number(now), affected);
   return ret;
+}
+// Columns constrained together must be tested together. Ordinary inputs are
+// immutable during publication; expand generated expressions only to find the
+// target AI columns they depend on, not to connect unrelated shared inputs.
+int publication_components(const std::vector<Task> &tasks, std::vector<size_t> &components)
+{
+  int ret = OB_SUCCESS;
+  Definition definition;
+  if (tasks.empty()) { return ret; }
+  if (OB_FAIL(definition.resolve(tasks[0]))) { return ret; }
+  const ObTableSchema &table = *definition.table;
+  for (size_t i = 0; i < tasks.size(); ++i) { components.push_back(i); }
+  auto root = [&](size_t i) {
+    while (components[i] != i) { i = components[i]; }
+    return i;
+  };
+  auto connect = [&](const ObIArray<uint64_t> &references) -> int {
+    int ret = OB_SUCCESS;
+    std::vector<uint64_t> pending, visited;
+    std::vector<size_t> targets;
+    for (int64_t i = 0; i < references.count(); ++i) { pending.push_back(references.at(i)); }
+    for (size_t i = 0; OB_SUCC(ret) && i < pending.size(); ++i) {
+      const uint64_t id = pending[i];
+      if (std::find(visited.begin(), visited.end(), id) != visited.end()) { continue; }
+      visited.push_back(id);
+      for (size_t j = 0; j < tasks.size(); ++j) {
+        if (tasks[j].column == id) { targets.push_back(j); }
+      }
+      const auto *column = table.get_column_schema(id);
+      if (column != nullptr && column->is_generated_column()) {
+        ObSEArray<uint64_t, 8> dependencies;
+        if (OB_FAIL(column->get_cascaded_column_ids(dependencies))) {}
+        for (int64_t j = 0; OB_SUCC(ret) && j < dependencies.count(); ++j) {
+          const uint64_t dependency = dependencies.at(j);
+          if (std::find(pending.begin(), pending.end(), dependency) == pending.end()) {
+            pending.push_back(dependency);
+          }
+        }
+      }
+    }
+    for (size_t i = 1; i < targets.size(); ++i) { components[root(targets[i])] = root(targets[0]); }
+    return ret;
+  };
+  for (auto it = table.constraint_begin(); OB_SUCC(ret) && it != table.constraint_end(); ++it) {
+    ObSEArray<uint64_t, 8> references;
+    for (auto col = (*it)->cst_col_begin(); OB_SUCC(ret) && col != (*it)->cst_col_end(); ++col) {
+      ret = references.push_back(*col);
+    }
+    if (OB_SUCC(ret)) { ret = connect(references); }
+  }
+  const auto &indexes = table.get_simple_index_infos();
+  for (int64_t i = 0; OB_SUCC(ret) && i < indexes.count(); ++i) {
+    const ObTableSchema *index = nullptr;
+    if (OB_FAIL(definition.guard.get_table_schema(indexes.at(i).table_id_, index))) {}
+    else if (index == nullptr) { ret = OB_SCHEMA_EAGAIN; }
+    else if (index->is_unique_index()) {
+      ObSEArray<uint64_t, 8> references;
+      for (auto it = index->column_begin(); OB_SUCC(ret) && it != index->column_end(); ++it) {
+        if ((*it)->get_index_position() > 0) { ret = references.push_back((*it)->get_column_id()); }
+      }
+      if (OB_SUCC(ret)) { ret = connect(references); }
+    }
+  }
+  const auto &foreign_keys = table.get_foreign_key_infos();
+  for (int64_t i = 0; OB_SUCC(ret) && i < foreign_keys.count(); ++i) {
+    const auto &fk = foreign_keys.at(i);
+    if (fk.child_table_id_ == table.get_table_id()) { ret = connect(fk.child_column_ids_); }
+    if (OB_SUCC(ret) && fk.parent_table_id_ == table.get_table_id()) { ret = connect(fk.parent_column_ids_); }
+  }
+  for (size_t i = 0; i < components.size(); ++i) { components[i] = root(i); }
+  return ret;
+}
+
+bool permanent_publication_error(int error)
+{
+  switch (error) {
+    case OB_ERR_PRIMARY_KEY_DUPLICATE:
+    case OB_ERR_DUPLICATED_UNIQUE_KEY:
+    case OB_ERR_CHECK_CONSTRAINT_VIOLATED:
+    case OB_ERR_DATA_TOO_LONG:
+    case OB_DATA_OUT_OF_RANGE:
+    case OB_ERR_TRUNCATED_WRONG_VALUE:
+    case OB_ERR_TRUNCATED_WRONG_VALUE_FOR_FIELD:
+    case OB_ERR_INVALID_JSON_TEXT:
+    case OB_ERR_INVALID_JSON_VALUE_FOR_CAST:
+    case OB_ERR_INVALID_VECTOR_DIM:
+      return true;
+    default:
+      return false; // Lock, transaction and schema errors must remain retryable.
+  }
 }
 int publish(const Task &group)
 {
@@ -334,24 +496,68 @@ int publish(const Task &group)
         if (ret == OB_ITER_END) { ret = OB_SUCCESS; }
       }
     }
-    std::string update, condition;
+    std::string update, condition, qualified;
+    std::vector<std::string> column_updates, failed_updates;
     for (size_t i = 0; OB_SUCC(ret) && ready && !stale && i < tasks.size(); ++i) {
       Definition d;
       if (OB_FAIL(d.resolve(tasks[i]))) {
         if (ret == OB_ENTRY_NOT_EXIST) { stale = true; ret = OB_SUCCESS; }
       } else {
-        if (i == 0) { update = "UPDATE " + d.qualified + " SET "; }
+        if (i == 0) {
+          qualified = d.qualified;
+          update = "UPDATE " + qualified + " SET ";
+          condition = "(" + group.predicate + ") AND ";
+        }
         else { update += ","; condition += " AND "; }
         const bool success = tasks[i].state == State::SUCCEEDED;
         update += d.result_name + "=" + (success && !tasks[i].null_result ? literal(tasks[i].payload) : "NULL")
             + "," + d.state_name + "=" + (success ? "1" : "2");
-        condition += "(" + d.current(tasks[i]) + ")";
+        const std::string assignment = d.result_name + "="
+            + (success && !tasks[i].null_result ? literal(tasks[i].payload) : "NULL")
+            + "," + d.state_name + "=" + (success ? "1" : "2");
+        column_updates.push_back(assignment);
+        failed_updates.push_back(d.result_name + "=NULL," + d.state_name + "=2");
+        condition += "(" + d.current_request(tasks[i]) + ")";
       }
     }
     int64_t affected = 0;
     if (OB_SUCC(ret) && ready && !tasks.empty()) {
       if (!stale) {
-        ret = write(trans, update + " WHERE " + condition, affected);
+        if (OB_FAIL(write(trans, "SAVEPOINT ai_column_group", affected))) {}
+        else {
+          ret = write(trans, update + " WHERE " + condition, affected);
+          if (permanent_publication_error(ret)) {
+            // CHECK/UNIQUE-coupled columns must never be judged in isolation.
+            // Each component is tried once; all changes commit with the group.
+            trans.reset_last_error(); // The proxy otherwise rejects recovery SQL after a failed write.
+            ret = write(trans, "ROLLBACK TO SAVEPOINT ai_column_group", affected);
+            std::vector<size_t> components;
+            if (OB_SUCC(ret)) { ret = publication_components(tasks, components); }
+            for (size_t i = 0; OB_SUCC(ret) && i < components.size(); ++i) {
+              if (components[i] != i) { continue; }
+              std::string candidate = "UPDATE " + qualified + " SET ";
+              std::string failure = candidate;
+              bool first = true;
+              for (size_t j = 0; j < components.size(); ++j) {
+                if (components[j] == i) {
+                  if (!first) { candidate += ","; failure += ","; }
+                  candidate += column_updates[j];
+                  failure += failed_updates[j];
+                  first = false;
+                }
+              }
+              if (OB_FAIL(write(trans, "SAVEPOINT ai_column_candidate", affected))) {}
+              else {
+                ret = write(trans, candidate + " WHERE " + condition, affected);
+                if (permanent_publication_error(ret)) {
+                  trans.reset_last_error();
+                  if (OB_FAIL(write(trans, "ROLLBACK TO SAVEPOINT ai_column_candidate", affected))) {}
+                  else { ret = write(trans, failure + " WHERE " + condition, affected); }
+                }
+              }
+            }
+          }
+        }
       }
       if (OB_SUCC(ret)) {
         // Delete and native row/index UPDATE commit together. Zero matched rows means superseded/deleted.
@@ -372,36 +578,55 @@ int recover_publication()
   {
     ObISQLClient::ReadResult res;
     const std::string query = std::string("SELECT * FROM ") + TASKS
-        + " t WHERE state IN (2,4) AND NOT EXISTS (SELECT 1 FROM " + TASKS
-        + " n WHERE n.table_id=t.table_id AND n.request_id=t.request_id AND n.rowkey_predicate=t.rowkey_predicate"
-          " AND n.state NOT IN (2,4)) LIMIT 1";
+        + " t WHERE state IN (2,4) AND eligible_ts<=NOW(6) AND NOT EXISTS (SELECT 1 FROM " + TASKS
+        + " n WHERE n.table_id=t.table_id AND n.request_id=t.request_id AND n.rowkey_hash=t.rowkey_hash AND n.rowkey_predicate=t.rowkey_predicate"
+          " AND n.state NOT IN (2,4)) ORDER BY eligible_ts LIMIT 1";
     if (OB_FAIL(GCTX.sql_proxy_->read(res, query.c_str()))) {}
     else if (res.get_result() == nullptr) { ret = OB_ERR_UNEXPECTED; }
     else if (OB_FAIL(res.get_result()->next())) { if (ret == OB_ITER_END) { ret = OB_SUCCESS; } }
     else if (OB_FAIL(read_task(*res.get_result(), task))) {}
     else { found = true; }
   }
-  if (OB_SUCC(ret) && found) { ret = publish(task); }
+  if (OB_SUCC(ret) && found) {
+    ret = publish(task);
+    if (OB_FAIL(ret)) {
+      // A blocked group must not monopolize recovery selection or task claiming.
+      int64_t affected = 0;
+      const int defer_ret = write(*GCTX.sql_proxy_, std::string("UPDATE ") + TASKS
+          + " SET eligible_ts=TIMESTAMPADD(SECOND,1,NOW(6)) WHERE " + group_key(task), affected);
+      if (defer_ret != OB_SUCCESS) { LOG_WARN("failed to defer AI column publication", K(defer_ret)); }
+    }
+  }
   return ret;
 }
 } // namespace
 int AiColumnWorker::process_one()
 {
   int ret = OB_SUCCESS;
+  // Runtime modules start before persisted user schemas finish loading. A task
+  // resolved in that window looks stale and would be permanently discarded.
+  // Both recovery publication and claiming must wait for complete server startup.
+  if (GCTX.status_ != ObServiceStatus::SS_SERVING) { return ret; }
   Task task;
   bool found = false;
   if (GCTX.sql_proxy_ == nullptr || GCTX.schema_service_ == nullptr) { ret = OB_NOT_INIT; }
-  else if (OB_FAIL(recover_publication())) {}
-  else if (OB_FAIL(claim(task, found))) {}
-  else if (found) {
-    Definition definition;
-    int error = definition.resolve(task);
-    if (error == OB_SUCCESS) {
-      error = task.retries > definition.info.max_retries_ ? OB_TIMEOUT : evaluate(task, definition);
+  else {
+    const int recovery_ret = recover_publication();
+    if (recovery_ret != OB_SUCCESS && recovery_ret != OB_TABLE_NOT_EXIST) {
+      LOG_WARN("AI column publication recovery deferred", K(recovery_ret));
     }
-    const int64_t maximum = error == OB_ENTRY_NOT_EXIST ? 0 : definition.info.max_retries_;
-    if (OB_FAIL(finish(task, error, maximum))) {}
-    else { ret = publish(task); }
+    if (OB_FAIL(claim(task, found))) {}
+    else if (found && task.predicate.empty()) { ret = backfill(task); }
+    else if (found) {
+      Definition definition;
+      int error = definition.resolve(task);
+      if (error == OB_SUCCESS) {
+        error = task.retries > definition.info.max_retries_ ? OB_TIMEOUT : evaluate(task, definition);
+      }
+      const int64_t maximum = error == OB_ENTRY_NOT_EXIST ? 0 : definition.info.max_retries_;
+      if (OB_FAIL(finish(task, error, maximum))) {}
+      else { ret = publish(task); }
+    }
   }
   return ret;
 }
@@ -410,8 +635,8 @@ void AiColumnWorker::run1()
   lib::set_thread_name("AiColumn");
   while (!has_set_stop()) {
     const int ret = process_one();
-    if (ret != OB_SUCCESS && ret != OB_TABLE_NOT_EXIST && ret != OB_NOT_INIT) {
-      LOG_WARN("AI column worker iteration failed", K(ret));
+    if (ret != OB_SUCCESS && ret != OB_TABLE_NOT_EXIST && REACH_TIME_INTERVAL(10000000)) {
+      LOG_ERROR("AI column worker iteration failed", K(ret));
     }
     usleep(100000);
   }

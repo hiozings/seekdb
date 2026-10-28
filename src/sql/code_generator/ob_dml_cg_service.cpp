@@ -2107,6 +2107,20 @@ int ObDmlCgService::generate_dml_base_ctdef(ObLogicalOperator &op,
     }
   }
 
+  if (OB_SUCC(ret) && index_dml_info.is_primary_index_) {
+    const ObTableSchema *schema = nullptr;
+    auto *guard = op.get_plan()->get_optimizer_context().get_schema_guard();
+    if (OB_ISNULL(guard)) { ret = OB_ERR_UNEXPECTED; }
+    else if (OB_FAIL(guard->get_table_schema(index_dml_info.ref_table_id_, schema))) {}
+    else if (OB_ISNULL(schema)) { ret = OB_ERR_UNEXPECTED; }
+    else {
+      for (auto it = schema->column_begin(); it != schema->column_end(); ++it) {
+        dml_base_ctdef.has_ai_columns_ |= (*it)->is_ai_column();
+      }
+      if (dml_base_ctdef.has_ai_columns_) { cg_.phy_plan_->set_has_nested_sql(true); }
+    }
+  }
+
   if (OB_SUCC(ret) &&
       op.is_dml_operator() &&
       OB_NOT_NULL(index_dml_info.trans_info_expr_)) {

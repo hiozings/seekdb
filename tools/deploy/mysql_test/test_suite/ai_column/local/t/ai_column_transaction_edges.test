@@ -1,0 +1,83 @@
+# Local regression: business writes and task writes share transaction/savepoints.
+--disable_query_log
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py start 19125
+--disable_warnings
+drop database if exists ai_column_transaction_edges;
+--enable_warnings
+create database ai_column_transaction_edges;
+--error 0,11112
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('transaction_edges_ep');
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL('transaction_edges_model');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('transaction_edges_model', '{"type":"completion","model_name":"mock-complete"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('transaction_edges_ep', '{"ai_model_name":"transaction_edges_model","url":"http://127.0.0.1:19125/v1/chat/completions","access_key":"local-key","provider":"openai","request_model_name":"mock-complete"}');
+create table ai_column_transaction_edges.docs (
+ id bigint primary key,
+ content varchar(100) collate utf8mb4_general_ci,
+ result varchar(400) AI COLUMN (AI_COMPLETE('transaction_edges_model', content)) WITH (sync_mode='async', max_retries=0)
+);
+let $table_id = `select t.table_id from oceanbase.__all_table t join oceanbase.__all_database d on d.database_id=t.database_id where d.database_name='ai_column_transaction_edges' and t.table_name='docs'`;
+start transaction;
+insert into ai_column_transaction_edges.docs(id,content) values(1,'Case');
+eval select count(*)=1 as initial_task from oceanbase.__all_ai_column_task where table_id=$table_id;
+--disable_warnings
+insert ignore into ai_column_transaction_edges.docs(id,content) values(1,'ignored');
+--enable_warnings
+eval select count(*)=1 as ignored_duplicate_has_no_task from oceanbase.__all_ai_column_task where table_id=$table_id;
+savepoint before_change;
+update ai_column_transaction_edges.docs set content='case' where id=1;
+eval select count(*)=1 as replacement_task from oceanbase.__all_ai_column_task where table_id=$table_id;
+rollback to savepoint before_change;
+select binary content='Case' as savepoint_restores_content from ai_column_transaction_edges.docs;
+eval select count(*)=1 as savepoint_restores_task from oceanbase.__all_ai_column_task where table_id=$table_id;
+update ai_column_transaction_edges.docs set id=2 where id=1;
+eval select count(*)=1 and min(rowkey_predicate)='`id` = 2' as primary_key_task_moved from oceanbase.__all_ai_column_task where table_id=$table_id;
+replace into ai_column_transaction_edges.docs(id,content) values(2,'replacement');
+eval select count(*)=1 as replace_replaces_task from oceanbase.__all_ai_column_task where table_id=$table_id;
+delete from ai_column_transaction_edges.docs where id=2;
+eval select count(*)=0 as delete_cleans_tasks from oceanbase.__all_ai_column_task where table_id=$table_id;
+rollback;
+--real_sleep 1
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py assert 19125 no-requests
+insert into ai_column_transaction_edges.docs(id,content) values(1,'Case');
+let $remaining=100;
+let $ready=0;
+while ($remaining)
+{
+ let $ready = `select result is not null from ai_column_transaction_edges.docs where id=1`;
+ if ($ready == 1) { let $remaining=0; }
+ if ($ready == 0) { --real_sleep 0.1
+ dec $remaining; }
+}
+eval select $ready=1 as initial_result_ready;
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py reset 19125
+update ai_column_transaction_edges.docs set content='Case' where id=1;
+--disable_warnings
+insert ignore into ai_column_transaction_edges.docs(id,content) values(1,'ignored');
+--enable_warnings
+--real_sleep 1
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py assert 19125 no-requests
+select binary result='mock:Case' as no_op_preserves_result from ai_column_transaction_edges.docs;
+eval select count(*)=0 as no_op_creates_no_task from oceanbase.__all_ai_column_task where table_id=$table_id;
+start transaction;
+update ai_column_transaction_edges.docs set content='case' where id=1;
+select result is null as case_change_invalidates from ai_column_transaction_edges.docs;
+eval select count(*)=1 as case_change_creates_task from oceanbase.__all_ai_column_task where table_id=$table_id;
+rollback;
+start transaction;
+--disable_result_log
+--error 1062
+insert into ai_column_transaction_edges.docs(id,content) values(3,'statement-rollback'),(1,'duplicate');
+--enable_result_log
+select count(*)=1 as failed_statement_keeps_rows from ai_column_transaction_edges.docs;
+eval select count(*)=0 as failed_statement_has_no_tasks from oceanbase.__all_ai_column_task where table_id=$table_id;
+rollback;
+--disable_result_log
+--error 1235
+update ai_column_transaction_edges.docs set result='forged' where id=1;
+--enable_result_log
+drop database ai_column_transaction_edges;
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('transaction_edges_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('transaction_edges_model');
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py stop 19125
+--enable_query_log

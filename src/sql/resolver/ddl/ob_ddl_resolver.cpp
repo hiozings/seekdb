@@ -1995,7 +1995,7 @@ int collect_ai_dependencies(const ParseNode *node, const ObTableSchema &table,
         if (validate) { ret = OB_ERR_BAD_FIELD_ERROR; }
       } else if (dep->is_ai_column() || dep->is_generated_column() || dep->is_hidden()) {
         ret = OB_NOT_SUPPORTED;
-        LOG_USER_ERROR(OB_NOT_SUPPORTED, "AI column dependencies on generated, hidden or AI columns");
+        // Keep the generic 1235 diagnostic used by the AI COLUMN DDL contract.
       } else {
         bool found = false;
         for (int64_t i = 0; i < info.dependency_column_ids_.count(); ++i) {
@@ -2078,25 +2078,12 @@ int ObDDLResolver::resolve_ai_column(ObColumnSchemaV2 &column, const ParseNode *
       : ob_is_integer_type(column.get_data_type()) ? " Return exactly one base-10 integer."
       : ob_is_numeric_type(column.get_data_type()) ? " Return exactly one valid decimal number." : nullptr;
     if (prompt != nullptr) {
-      // The model name is a SQL string literal. Find the first unquoted argument separator.
-      int64_t comma = -1;
-      char quote = 0;
+      // Keep business input untouched. The internal evaluator consumes this reserved
+      // config entry and supplies it as the provider's system prompt.
       const ObString &original = info.original_expr_;
-      for (int64_t i = 0; i < original.length() && comma < 0; ++i) {
-        char ch = original.ptr()[i];
-        if (quote != 0) {
-          if (ch == '\\') { ++i; }
-          else if (ch == quote) {
-            if (i + 1 < original.length() && original.ptr()[i + 1] == quote) { ++i; }
-            else { quote = 0; }
-          }
-        } else if (ch == '\'' || ch == '"' || ch == '`') { quote = ch; }
-        else if (ch == ',') { comma = i; }
-      }
-      if (comma < 0 || original.length() < comma + 2) { ret = OB_INVALID_ARGUMENT; }
-      else if (OB_FAIL(normalized.append_fmt("%.*s concat(%.*s, '%s'))",
-                 static_cast<int>(comma + 1), original.ptr(),
-                 static_cast<int>(original.length() - comma - 2), original.ptr() + comma + 1, prompt))) {
+      if (original.length() < 2 || original.ptr()[original.length() - 1] != ')') { ret = OB_INVALID_ARGUMENT; }
+      else if (OB_FAIL(normalized.append_fmt("%.*s, JSON_OBJECT('__seekdb_ai_column_system_prompt', '%s'))",
+                 static_cast<int>(original.length() - 1), original.ptr(), prompt))) {
       } else { info.normalized_expr_ = normalized.string(); }
     }
   }

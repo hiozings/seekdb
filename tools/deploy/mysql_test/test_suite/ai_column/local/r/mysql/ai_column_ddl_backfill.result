@@ -1,0 +1,8 @@
+add_backfills_existing_rows
+1
+modified_definition_recomputes_rows
+1
+backfill_and_row_tasks_drained
+1
+protected_assignments_leave_rows_unchanged
+1

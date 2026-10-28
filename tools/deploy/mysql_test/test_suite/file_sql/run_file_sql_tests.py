@@ -28,7 +28,7 @@ class FileSQL(unittest.TestCase):
     def setUpClass(cls):
         cls.directory=tempfile.TemporaryDirectory(prefix='seekdb-file-sql-')
         cls.root=Path(cls.directory.name)
-        spec=importlib.util.spec_from_file_location('fixtures',Path(__file__).parent/'data/generate.py')
+        spec=importlib.util.spec_from_file_location('fixtures',Path(__file__).parent/'local/generate.py')
         fixtures=importlib.util.module_from_spec(spec);spec.loader.exec_module(fixtures);fixtures.generate(cls.root)
         cls.previous_root=cls.sql('SELECT @@GLOBAL.secure_file_priv',enabled=False,local=True)
         cls.sql('SET GLOBAL secure_file_priv='+quote(cls.root),enabled=False,local=True)

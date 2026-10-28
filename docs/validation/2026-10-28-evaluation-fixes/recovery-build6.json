@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "killed_pid": 3227,
+  "request_count": 2,
+  "duplicate_calls": 1,
+  "response_loss": "first response after SIGKILL; retry after restart",
+  "strict_ready_result": "mock:slow-old",
+  "remaining_tasks": 0,
+  "rollback_requests": 0
+}

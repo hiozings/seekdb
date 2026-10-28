@@ -88,6 +88,7 @@ int check_ai_column_reads(ObExecContext &ctx, const ObPhysicalPlan &plan)
       const ObDatabaseSchema *db = NULL;
       const ObColumnSchemaV2 *column = NULL;
       const ObColumnSchemaV2 *state = NULL;
+      const ObColumnSchemaV2 *spec = NULL;
       AiColumnInfo info;
       ObSqlString sql;
       if (OB_FAIL(schema_guard->get_table_schema(table_id, table))) {
@@ -95,6 +96,8 @@ int check_ai_column_reads(ObExecContext &ctx, const ObPhysicalPlan &plan)
         ret = OB_SCHEMA_ERROR;
       } else if (OB_FAIL(get_ai_column_info(*column, info))) {
       } else if ((state = table->get_column_schema(info.state_column_id_)) == NULL) {
+        ret = OB_SCHEMA_ERROR;
+      } else if ((spec = table->get_column_schema(info.result_spec_column_id_)) == NULL) {
         ret = OB_SCHEMA_ERROR;
       } else if (OB_FAIL(schema_guard->get_database_schema(table->get_database_id(), db))) {
       } else if (db == NULL) {
@@ -107,7 +110,11 @@ int check_ai_column_reads(ObExecContext &ctx, const ObPhysicalPlan &plan)
       } else if (OB_FAIL(append_ai_identifier(sql, state->get_column_name_str()))) {
       } else if (OB_FAIL(sql.append(" IS NULL OR "))) {
       } else if (OB_FAIL(append_ai_identifier(sql, state->get_column_name_str()))) {
-      } else if (OB_FAIL(sql.append(" <> 1 LIMIT 1"))) {
+      } else if (OB_FAIL(sql.append(" <> 1 OR "))) {
+      } else if (OB_FAIL(append_ai_identifier(sql, spec->get_column_name_str()))) {
+      } else if (OB_FAIL(sql.append(" IS NULL OR "))) {
+      } else if (OB_FAIL(append_ai_identifier(sql, spec->get_column_name_str()))) {
+      } else if (OB_FAIL(sql.append_fmt(" <> '%ld' LIMIT 1", info.definition_version_))) {
       } else {
         ObSQLSessionInfo::StmtSavedValue saved_session;
         ObIInnerSQLConnection::SavedValue saved_conn;

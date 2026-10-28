@@ -1,0 +1,86 @@
+# Local regression: permanent publication errors fail a column without starving other work.
+--disable_query_log
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py start 19128
+--disable_warnings
+drop database if exists ai_column_publication_failure;
+--enable_warnings
+create database ai_column_publication_failure;
+--error 0,11112
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('publication_failure_ep');
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL('publication_failure_model');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('publication_failure_model', '{"type":"completion","model_name":"mock-complete"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('publication_failure_ep', '{"ai_model_name":"publication_failure_model","url":"http://127.0.0.1:19128/v1/chat/completions","access_key":"local-key","provider":"openai","request_model_name":"mock-complete"}');
+create table ai_column_publication_failure.docs(id bigint primary key, content varchar(50), result varchar(100) AI COLUMN(AI_COMPLETE('publication_failure_model',content)) WITH(max_retries=0), label varchar(100) AI COLUMN(AI_COMPLETE('publication_failure_model',concat('label:',id))) WITH(max_retries=0), unique key(result));
+insert into ai_column_publication_failure.docs(id,content) values(1,'same');
+let $remaining=150;
+let $ready=0;
+while ($remaining)
+{
+ let $ready = `select result is not null and label is not null from ai_column_publication_failure.docs where id=1`;
+ if ($ready == 1) { let $remaining=0; }
+ if ($ready == 0) { --real_sleep 0.1
+ dec $remaining; }
+}
+eval select $ready=1 as first_unique_result_ready;
+insert into ai_column_publication_failure.docs(id,content) values(2,'same');
+let $remaining=150;
+let $ready=0;
+while ($remaining)
+{
+ let $ready = `select ifnull(result is null and label='mock:label:2',0) from ai_column_publication_failure.docs where id=2`;
+ if ($ready == 1) { let $remaining=0; }
+ if ($ready == 0) { --real_sleep 0.1
+ dec $remaining; }
+}
+eval select $ready=1 as rejected_column_does_not_discard_sibling;
+select count(*)=0 as permanent_failure_group_drained from oceanbase.__all_ai_column_task task join oceanbase.__all_table t on task.table_id=t.table_id join oceanbase.__all_database d on t.database_id=d.database_id where d.database_name='ai_column_publication_failure';
+set session ai_column_strict_read=on;
+--disable_result_log
+--error 11120
+select result from ai_column_publication_failure.docs where id=1;
+--enable_result_log
+select count(*)=2 as successful_sibling_group_is_ready from ai_column_publication_failure.docs where label is not null;
+set session ai_column_strict_read=off;
+create table ai_column_publication_failure.later(id bigint primary key, content varchar(50), result varchar(100) AI COLUMN(AI_COMPLETE('publication_failure_model',content)) WITH(max_retries=0));
+insert into ai_column_publication_failure.later(id,content) values(3,'later');
+let $remaining=150;
+let $ready=0;
+while ($remaining)
+{
+ let $ready = `select ifnull(result='mock:later',0) from ai_column_publication_failure.later where id=3`;
+ if ($ready == 1) { let $remaining=0; }
+ if ($ready == 0) { --real_sleep 0.1
+ dec $remaining; }
+}
+eval select $ready=1 as later_table_work_is_not_starved;
+# A and B must become non-NULL together; C independently collides with UNIQUE.
+create table ai_column_publication_failure.coupled(id bigint primary key, content varchar(50), a varchar(100) AI COLUMN(AI_COMPLETE('publication_failure_model',concat('a:',id))) WITH(max_retries=0), b varchar(100) AI COLUMN(AI_COMPLETE('publication_failure_model',concat('b:',id))) WITH(max_retries=0), c varchar(100) AI COLUMN(AI_COMPLETE('publication_failure_model',content)) WITH(max_retries=0), unique key(c), check((a is null)=(b is null)));
+insert into ai_column_publication_failure.coupled(id,content) values(1,'collision');
+let $remaining=150;
+let $ready=0;
+while ($remaining)
+{
+ let $ready = `select a is not null and b is not null and c is not null from ai_column_publication_failure.coupled where id=1`;
+ if ($ready == 1) { let $remaining=0; }
+ if ($ready == 0) { --real_sleep 0.1
+ dec $remaining; }
+}
+eval select $ready=1 as coupled_first_row_ready;
+insert into ai_column_publication_failure.coupled(id,content) values(2,'collision');
+let $remaining=150;
+let $ready=0;
+while ($remaining)
+{
+ let $ready = `select ifnull(a='mock:a:2' and b='mock:b:2' and c is null,0) from ai_column_publication_failure.coupled where id=2`;
+ if ($ready == 1) { let $remaining=0; }
+ if ($ready == 0) { --real_sleep 0.1
+ dec $remaining; }
+}
+eval select $ready=1 as coupled_success_survives_independent_failure;
+select count(*)=0 as coupled_group_tasks_drained from oceanbase.__all_ai_column_task task join oceanbase.__all_table t on task.table_id=t.table_id join oceanbase.__all_database d on t.database_id=d.database_id where d.database_name='ai_column_publication_failure';
+drop database ai_column_publication_failure;
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('publication_failure_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('publication_failure_model');
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py stop 19128
+--enable_query_log

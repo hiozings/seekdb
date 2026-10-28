@@ -22,6 +22,8 @@ pub mod ffi {
         spec: String,
         names: Vec<String>,
         kinds: Vec<u8>,
+        nullable: Vec<u8>,
+        scales: Vec<u8>,
         row_count: u64,
         error: String,
     }
@@ -84,6 +86,10 @@ impl Options {
             };
             ensure!(seen.insert(key.clone()), "duplicate option {key}");
             match key.as_str() {
+                "format" => ensure!(
+                    value.as_str() == Some("newline_delimited"),
+                    "JSON format only supports newline_delimited"
+                ),
                 "header" => options.header = value.as_bool().context("header must be boolean")?,
                 "sample_size" => {
                     ensure!(value.as_i64() == Some(-1), "sample_size only supports -1")
@@ -134,6 +140,8 @@ struct Column {
     name: String,
     kind: Kind,
     exact_int: bool,
+    nullable: bool,
+    scale: u8,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Spec {
@@ -195,6 +203,19 @@ fn classify(s: String) -> Scalar {
 }
 fn merge(column: &mut Column, value: &Scalar) {
     use Kind::*;
+    column.nullable |= value.kind == Kind::Null;
+    if value.kind == Kind::DateTime {
+        // DATETIME supports up to microseconds. Infer across every row, including
+        // Date -> DateTime promotion and fractional values beyond the first row.
+        let scale = value.text.split_once('.').map_or(0, |(_, fraction)| {
+            fraction
+                .bytes()
+                .take_while(u8::is_ascii_digit)
+                .count()
+                .min(6) as u8
+        });
+        column.scale = column.scale.max(scale);
+    }
     column.exact_int &= value.exact;
     column.kind = match (column.kind, value.kind) {
         (Null, t) | (t, Null) => t,
@@ -427,9 +448,9 @@ fn unique_names(names: Vec<String>) -> Vec<String> {
                 name
             };
             let mut candidate = base.clone();
-            let mut suffix = 1;
+            let mut suffix = 2;
             while !seen.insert(candidate.to_lowercase()) {
-                candidate = format!("{base}_{suffix}");
+                candidate = format!("{base}__{suffix}");
                 suffix += 1;
             }
             candidate
@@ -468,6 +489,8 @@ fn bind_file_budget(
                 name: "file".into(),
                 kind: Kind::Text,
                 exact_int: true,
+                nullable: false,
+                scale: 0,
             }],
             rows: paths.len() as u64,
         };
@@ -503,6 +526,8 @@ fn bind_file_budget(
                     name,
                     kind: Kind::Null,
                     exact_int: true,
+                    nullable: false,
+                    scale: 0,
                 })
                 .collect();
             if !spec.options.header {
@@ -531,6 +556,11 @@ fn bind_file_budget(
             let mut line = 0;
             while let Some(row) = json_record(&mut input, &mut line)? {
                 check_time()?;
+                for column in &mut spec.columns {
+                    if !row.iter().any(|(name, _)| name == &column.name) {
+                        column.nullable = true;
+                    }
+                }
                 for (name, value) in row {
                     let index = if let Some(i) = spec.columns.iter().position(|c| c.name == name) {
                         i
@@ -540,6 +570,8 @@ fn bind_file_budget(
                             name,
                             kind: Kind::Null,
                             exact_int: true,
+                            nullable: spec.rows > 0,
+                            scale: 0,
                         });
                         spec.columns.len() - 1
                     };
@@ -571,6 +603,8 @@ fn binding(spec: Spec) -> Result<ffi::Binding> {
     Ok(ffi::Binding {
         names: spec.columns.iter().map(|c| c.name.clone()).collect(),
         kinds: spec.columns.iter().map(|c| c.kind as u8).collect(),
+        nullable: spec.columns.iter().map(|c| u8::from(c.nullable)).collect(),
+        scales: spec.columns.iter().map(|c| c.scale).collect(),
         row_count: spec.rows,
         spec: serde_json::to_string(&spec)?,
         error: String::new(),
@@ -587,6 +621,8 @@ pub fn file_bind_deadline(
         spec: String::new(),
         names: Vec::new(),
         kinds: Vec::new(),
+        nullable: Vec::new(),
+        scales: Vec::new(),
         row_count: 0,
         error: format!("{path}: {e:#}"),
     })
@@ -596,6 +632,8 @@ pub fn file_bind(root: &str, path: &str, format: &str, options: &str) -> ffi::Bi
         spec: String::new(),
         names: Vec::new(),
         kinds: Vec::new(),
+        nullable: Vec::new(),
+        scales: Vec::new(),
         row_count: 0,
         error: format!("{path}: {e:#}"),
     })
@@ -786,6 +824,71 @@ mod tests {
     use super::*;
     use std::fs;
     #[test]
+    fn official_format_and_duplicate_headers() {
+        assert!(Options::parse(r#"{"format":"newline_delimited"}"#).is_ok());
+        assert_eq!(
+            unique_names(vec!["id".into(), "id".into(), "ID".into()]),
+            vec!["id", "id__2", "ID__3"]
+        );
+    }
+    #[test]
+    fn csv_describe_metadata_and_null_conventions() {
+        let dir = std::env::temp_dir().join(format!("file-sql-contract-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("schema.csv"),
+            "id,flag,day,created,text,id\n1,true,2026-08-01,2026-08-01T10:11:12,NULL,11\n2,false,,,\"\",12\n").unwrap();
+        let binding = bind_file(dir.to_str().unwrap(), "schema.csv", "csv", "{}").unwrap();
+        assert_eq!(
+            binding.names,
+            vec!["id", "flag", "day", "created", "text", "id__2"]
+        );
+        assert_eq!(binding.kinds, vec![2, 1, 4, 5, 6, 2]);
+        assert_eq!(binding.nullable, vec![0, 0, 1, 1, 0, 0]);
+        let mut scan = open_scan(dir.to_str().unwrap(), &binding.spec, &[4]).unwrap();
+        let batch = scan.next_batch(10).unwrap();
+        assert!(!batch.cells[0].is_null);
+        assert_eq!(batch.cells[0].text, "NULL");
+        assert!(!batch.cells[1].is_null);
+        assert_eq!(batch.cells[1].text, "");
+        let binding = bind_file(
+            dir.to_str().unwrap(),
+            "schema.csv",
+            "csv",
+            r#"{"nullstr":"NULL"}"#,
+        )
+        .unwrap();
+        assert_eq!(binding.nullable[4], 1);
+        fs::write(dir.join("schema.jsonl"), "{\"a\":null}\n{\"b\":true}\n").unwrap();
+        let binding = bind_file(
+            dir.to_str().unwrap(),
+            "schema.jsonl",
+            "json",
+            r#"{"format":"newline_delimited"}"#,
+        )
+        .unwrap();
+        assert_eq!(binding.nullable, vec![1, 1]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn timestamp_fractional_precision() {
+        let dir = std::env::temp_dir().join(format!("file-sql-scales-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("times.csv"),
+            "seconds,mixed,micros\n2026-08-01 10:11:12,2026-08-01,2026-08-01 10:11:12.123456\n2026-08-02T10:11:12,2026-08-02T10:11:12.12,\n2026-08-03 10:11:12,2026-08-03 10:11:12.123,\n").unwrap();
+        let bound = bind_file(dir.to_str().unwrap(), "times.csv", "csv", "{}").unwrap();
+        assert_eq!(bound.scales, vec![0, 3, 6]);
+        let spec: Value = serde_json::from_str(&bound.spec).unwrap();
+        assert_eq!(spec["columns"][0]["scale"], 0);
+        assert_eq!(spec["columns"][1]["scale"], 3);
+        assert_eq!(spec["columns"][2]["scale"], 6);
+        let mut scan = open_scan(dir.to_str().unwrap(), &bound.spec, &[2]).unwrap();
+        assert_eq!(
+            scan.next_batch(1).unwrap().cells[0].text,
+            "2026-08-01 10:11:12.123456"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
     fn csv_schema_and_streaming() {
         let dir = std::env::temp_dir().join(format!("file-sql-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -797,6 +900,7 @@ mod tests {
         let binding = bind_file(dir.to_str().unwrap(), "a.csv", "csv", "{}").unwrap();
         assert_eq!(binding.names, vec!["id", "name", "flag"]);
         assert_eq!(binding.kinds, vec![2, 6, 1]);
+        assert_eq!(binding.nullable, vec![0, 1, 0]);
         let mut reader = open_scan(dir.to_str().unwrap(), &binding.spec, &[0, 1, 2]).unwrap();
         let batch = reader.next_batch(1).unwrap();
         assert_eq!(batch.rows, 1);
@@ -817,6 +921,7 @@ mod tests {
         let binding = bind_file(dir.to_str().unwrap(), "a.jsonl", "json", "{}").unwrap();
         assert_eq!(binding.names, vec!["a", "b"]);
         assert_eq!(binding.kinds, vec![3, 1]);
+        assert_eq!(binding.nullable, vec![0, 1]);
         assert!(bind_file(dir.to_str().unwrap(), "../etc/passwd", "csv", "{}").is_err());
         assert!(bind_file("", "a.csv", "csv", "{}").is_err());
         fs::write(dir.join("bad.jsonl"), "{\"a\":[]}\n").unwrap();
@@ -827,6 +932,44 @@ mod tests {
 #[cfg(test)]
 mod parquet_tests {
     use super::*;
+    #[test]
+    fn timestamp_units_preserve_fractional_precision() {
+        use parquet::{
+            data_type::Int64Type, file::writer::SerializedFileWriter,
+            schema::parser::parse_message_type,
+        };
+        use std::sync::Arc;
+        let dir =
+            std::env::temp_dir().join(format!("file-sql-parquet-scales-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let schema = Arc::new(parse_message_type(
+            "message test { REQUIRED INT64 ms (TIMESTAMP(MILLIS,false)); REQUIRED INT64 us (TIMESTAMP(MICROS,false)); }").unwrap());
+        let mut writer = SerializedFileWriter::new(
+            File::create(dir.join("times.parquet")).unwrap(),
+            schema,
+            Default::default(),
+        )
+        .unwrap();
+        let mut group = writer.next_row_group().unwrap();
+        for value in [123_i64, 123456_i64] {
+            let mut column = group.next_column().unwrap().unwrap();
+            column
+                .typed::<Int64Type>()
+                .write_batch(&[value], None, None)
+                .unwrap();
+            column.close().unwrap();
+        }
+        group.close().unwrap();
+        writer.close().unwrap();
+        let bound = bind_file(dir.to_str().unwrap(), "times.parquet", "parquet", "{}").unwrap();
+        assert_eq!(bound.scales, vec![3, 6]);
+        let mut scan = open_scan(dir.to_str().unwrap(), &bound.spec, &[0, 1]).unwrap();
+        let row = scan.next_batch(1).unwrap();
+        assert_eq!(row.cells[0].text, "1970-01-01 00:00:00.123000");
+        assert_eq!(row.cells[1].text, "1970-01-01 00:00:00.123456");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn row_groups_nulls_snappy_and_projection() {
         use parquet::{
@@ -961,6 +1104,8 @@ mod boundary_tests {
             name: "v".into(),
             kind: Kind::Null,
             exact_int: true,
+            nullable: false,
+            scale: 0,
         };
         let mut b = a.clone();
         for value in &values[..2] {

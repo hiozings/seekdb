@@ -1,0 +1,53 @@
+# Local regression: committed ALTER backfill obligations survive until all rows have tasks.
+--disable_query_log
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py start 19126
+--disable_warnings
+drop database if exists ai_column_ddl_backfill;
+--enable_warnings
+create database ai_column_ddl_backfill;
+--error 0,11112
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('ddl_backfill_ep');
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL('ddl_backfill_model');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('ddl_backfill_model', '{"type":"completion","model_name":"mock-complete"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('ddl_backfill_ep', '{"ai_model_name":"ddl_backfill_model","url":"http://127.0.0.1:19126/v1/chat/completions","access_key":"local-key","provider":"openai","request_model_name":"mock-complete"}');
+create table ai_column_ddl_backfill.docs(id bigint primary key, content varchar(100));
+insert into ai_column_ddl_backfill.docs values(1,'one'),(2,'two');
+alter table ai_column_ddl_backfill.docs add column result varchar(400) AI COLUMN (AI_COMPLETE('ddl_backfill_model',content)) WITH (sync_mode='async',max_retries=0);
+let $remaining=150;
+let $ready=0;
+while ($remaining)
+{
+ let $ready = `select count(*)=2 from ai_column_ddl_backfill.docs where result=concat('mock:',content)`;
+ if ($ready == 1) { let $remaining=0; }
+ if ($ready == 0) { --real_sleep 0.1
+ dec $remaining; }
+}
+eval select $ready=1 as add_backfills_existing_rows;
+alter table ai_column_ddl_backfill.docs modify column result varchar(400) AI COLUMN (AI_COMPLETE('ddl_backfill_model',concat('v2:',content))) WITH (sync_mode='async',max_retries=0);
+let $remaining=150;
+let $ready=0;
+while ($remaining)
+{
+ let $ready = `select count(*)=2 from ai_column_ddl_backfill.docs where result=concat('mock:v2:',content)`;
+ if ($ready == 1) { let $remaining=0; }
+ if ($ready == 0) { --real_sleep 0.1
+ dec $remaining; }
+}
+eval select $ready=1 as modified_definition_recomputes_rows;
+select count(*)=0 as backfill_and_row_tasks_drained
+from oceanbase.__all_ai_column_task task join oceanbase.__all_table t on task.table_id=t.table_id
+join oceanbase.__all_database d on t.database_id=d.database_id where d.database_name='ai_column_ddl_backfill';
+create view ai_column_ddl_backfill.v_docs as select result as ai_result, content, id from ai_column_ddl_backfill.docs;
+--disable_result_log
+--error 1235
+update ai_column_ddl_backfill.v_docs set ai_result='forged' where id=1;
+--error 1235
+insert into ai_column_ddl_backfill.docs values(3,'three','forged');
+--enable_result_log
+select count(*)=2 as protected_assignments_leave_rows_unchanged from ai_column_ddl_backfill.docs;
+drop database ai_column_ddl_backfill;
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('ddl_backfill_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('ddl_backfill_model');
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py stop 19126
+--enable_query_log

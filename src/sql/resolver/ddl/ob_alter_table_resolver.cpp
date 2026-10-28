@@ -3867,6 +3867,10 @@ int ObAlterTableResolver::resolve_change_column(const ParseNode &node)
     if (OB_SUCC(ret)) {
       ObColumnResolveStat stat;
       alter_column_schema.set_column_flags(origin_col_schema->get_column_flags());
+      if (origin_col_schema->is_ai_column()
+          && OB_FAIL(alter_column_schema.set_ai_column_info_str(origin_col_schema->get_ai_column_info_str()))) {
+        return ret;
+      }
       //alter column's generated column flag should be parsed by itself,
       // So need to clear the generated column flag that was previously copied
       alter_column_schema.erase_generated_column_flags();
@@ -4033,6 +4037,10 @@ int ObAlterTableResolver::resolve_modify_column(const ParseNode &node,
           //alter column's generated column flag should be parsed by itself,
           // So need to clear the generated column flag that was previously copied
           alter_column_schema.set_column_flags(origin_col_schema->get_column_flags());
+          if (origin_col_schema->is_ai_column()
+              && OB_FAIL(alter_column_schema.set_ai_column_info_str(origin_col_schema->get_ai_column_info_str()))) {
+            return ret;
+          }
           alter_column_schema.erase_generated_column_flags();
           alter_column_schema.erase_string_lob_flag();
           alter_column_schema.drop_not_null_cst();

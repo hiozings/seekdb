@@ -30,7 +30,7 @@ int ai_changed_expr(ObRawExprFactory &factory, ObSQLSessionInfo *session,
     if (ob_is_string_type(value->get_data_type())) {
       ObSysFunRawExpr *hex = nullptr;
       if (OB_FAIL(factory.create_raw_expr(T_FUN_SYS_HEX, hex))) {
-      } else if (OB_FAIL(hex->add_param_expr(value))) {
+      } else if (OB_FAIL(hex->set_param_expr(value))) {
       } else {
         hex->set_func_name(ObString::make_string("hex"));
         ret = hex->formalize(session);
@@ -45,7 +45,7 @@ int ai_changed_expr(ObRawExprFactory &factory, ObSQLSessionInfo *session,
   } else if (OB_FAIL(equal->set_param_exprs(old_value, new_value))) {
   } else if (OB_FAIL(equal->formalize(session))) {
   } else if (OB_FAIL(factory.create_raw_expr(T_OP_NOT, negate))) {
-  } else if (OB_FAIL(negate->add_param_expr(equal))) {
+  } else if (OB_FAIL(negate->set_param_expr(equal))) {
   } else {
     ret = negate->formalize(session);
     out = negate;
@@ -59,16 +59,35 @@ int ObDelUpdResolver::resolve_ai_column_assignments(
 {
   int ret = OB_SUCCESS;
   if (session_info_->is_ai_column_internal()) { return ret; }
+  auto base_column_id = [&](const ObColumnRefRawExpr *expr) {
+    const ColumnItem *item = get_stmt()->get_column_item_by_id(expr->get_table_id(), expr->get_column_id());
+    return item != nullptr && item->base_cid_ != OB_INVALID_ID ? item->base_cid_ : expr->get_column_id();
+  };
   const uint64_t retry_column = session_info_->get_ai_column_retry_column_id();
   auto &assignments = table_assign.assignments_;
   for (int64_t i = assignments.count() - 1; OB_SUCC(ret) && i >= 0; --i) {
-    const ObColumnSchemaV2 *column = schema.get_column_schema(assignments.at(i).column_expr_->get_column_id());
+    const ObColumnSchemaV2 *column = schema.get_column_schema(base_column_id(assignments.at(i).column_expr_));
     if (column != nullptr && column->is_ai_column()) {
       if (column->get_column_id() == retry_column) {
         ret = assignments.remove(i); // Trusted RETRY placeholder; replaced below.
       } else {
         ret = OB_NOT_SUPPORTED;
         LOG_USER_ERROR(OB_NOT_SUPPORTED, "assigning an AI result column");
+      }
+    }
+  }
+  // A previously resolved hidden reference must not bypass the ordinary name lookup
+  // restriction (for example through a view or an already-populated column cache).
+  for (auto it = schema.column_begin(); OB_SUCC(ret) && it != schema.column_end(); ++it) {
+    if (!(*it)->is_ai_column()) { continue; }
+    AiColumnInfo info;
+    if (OB_FAIL(get_ai_column_info(**it, info))) { break; }
+    for (int64_t i = 0; OB_SUCC(ret) && i < assignments.count(); ++i) {
+      const uint64_t id = base_column_id(assignments.at(i).column_expr_);
+      if (!assignments.at(i).is_implicit_ && (id == info.state_column_id_
+          || id == info.request_column_id_ || id == info.result_spec_column_id_)) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "assigning AI hidden columns");
       }
     }
   }
@@ -88,7 +107,7 @@ int ObDelUpdResolver::resolve_ai_column_assignments(
     } else {
       for (int64_t i = 0; OB_SUCC(ret) && i < user_count; ++i) {
         const auto &assign = assignments.at(i);
-        const uint64_t id = assign.column_expr_->get_column_id();
+        const uint64_t id = base_column_id(assign.column_expr_);
         const auto *dependency = schema.get_column_schema(id);
         bool depends = dependency != nullptr && dependency->is_rowkey_column();
         for (int64_t j = 0; j < info.dependency_column_ids_.count(); ++j) {
@@ -146,6 +165,10 @@ int ObDelUpdResolver::resolve_ai_column_insert(ObInsertTableInfo &table_info)
 {
   int ret = OB_SUCCESS;
   if (session_info_->is_ai_column_internal()) { return ret; }
+  auto base_column_id = [&](const ObColumnRefRawExpr *expr) {
+    const ColumnItem *item = get_stmt()->get_column_item_by_id(expr->get_table_id(), expr->get_column_id());
+    return item != nullptr && item->base_cid_ != OB_INVALID_ID ? item->base_cid_ : expr->get_column_id();
+  };
   const ObTableSchema *schema = nullptr;
   if (OB_FAIL(schema_checker_->get_table_schema(table_info.ref_table_id_, schema))) { return ret; }
   if (schema == nullptr) { return OB_ERR_UNEXPECTED; }
@@ -154,17 +177,24 @@ int ObDelUpdResolver::resolve_ai_column_insert(ObInsertTableInfo &table_info)
     const auto *column = *it;
     if (!column->is_ai_column()) { continue; }
     for (int64_t i = 0; i < table_info.values_desc_.count(); ++i) {
-      if (table_info.values_desc_.at(i)->get_column_id() == column->get_column_id()) {
+      if (base_column_id(table_info.values_desc_.at(i)) == column->get_column_id()) {
         ret = OB_NOT_SUPPORTED;
         LOG_USER_ERROR(OB_NOT_SUPPORTED, "assigning an AI result column");
       }
     }
     AiColumnInfo info;
     if (OB_SUCC(ret)) { ret = get_ai_column_info(*column, info); }
+    for (int64_t i = 0; OB_SUCC(ret) && i < table_info.values_desc_.count(); ++i) {
+      const uint64_t id = base_column_id(table_info.values_desc_.at(i));
+      if (id == info.state_column_id_ || id == info.request_column_id_ || id == info.result_spec_column_id_) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "assigning AI hidden columns");
+      }
+    }
     if (OB_SUCC(ret) && request == nullptr) { ret = ai_uuid_expr(*params_.expr_factory_, session_info_, request); }
     for (int64_t i = 0; OB_SUCC(ret) && i < table_info.column_exprs_.count(); ++i) {
       ObColumnRefRawExpr *target = table_info.column_exprs_.at(i);
-      const uint64_t id = target->get_column_id();
+      const uint64_t id = base_column_id(target);
       ObRawExpr *value = nullptr;
       if (id == info.request_column_id_) { value = request; }
       else if (id == column->get_column_id()) { ret = ObRawExprUtils::build_null_expr(*params_.expr_factory_, value); }

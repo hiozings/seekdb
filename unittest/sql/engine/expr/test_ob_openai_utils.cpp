@@ -15,6 +15,8 @@
  */
 
 #include <gtest/gtest.h>
+#include "share/ai_service/ob_ai_service_struct.h"
+#include "lib/string/ob_sql_string.h"
 #include "sql/engine/expr/ob_expr_ai/ob_ai_func_utils.h"
 using namespace oceanbase::common;
 TEST(OpenAI, RestoreEmbeddingOrder)
@@ -120,4 +122,50 @@ TEST(Dashscope, RejectEmptyAndNonStringCompletion)
     EXPECT_NE(OB_SUCCESS,provider.parse_output(alloc,response,result));
   }
 }
+TEST(AiEndpoint, ConcurrencyDefaultCopyAndPartialUpdate)
+{
+  ObArenaAllocator alloc;
+  oceanbase::share::ObAiModelEndpointInfo endpoint;
+  ObString config("{\"ai_model_name\":\"contract_model\",\"url\":\"http://127.0.0.1:19999/\",\"provider\":\"openai\",\"access_key\":\"test-key\"}");
+  ObJsonObject *object = nullptr;
+  ASSERT_EQ(OB_SUCCESS, ObAIFuncJsonUtils::get_json_object_form_str(alloc, config, object));
+  ASSERT_EQ(OB_SUCCESS, endpoint.parse_from_json_base(alloc, ObString("contract_endpoint"), *object));
+  EXPECT_EQ(1, endpoint.get_max_concurrency());
+  for (const char *delta : {"{\"max_concurrency\":3}", "{\"max_concurrency\":7}", "{\"url\":\"http://127.0.0.1:19998/\"}"}) {
+    ObString json(delta);
+    ASSERT_EQ(OB_SUCCESS, ObAIFuncJsonUtils::get_json_object_form_str(alloc, json, object));
+    ASSERT_EQ(OB_SUCCESS, endpoint.merge_delta_endpoint(alloc, *object));
+  }
+  EXPECT_EQ(7, endpoint.get_max_concurrency());
+  oceanbase::share::ObAiModelEndpointInfo copied;
+  ASSERT_EQ(OB_SUCCESS, copied.deep_copy(alloc, endpoint));
+  EXPECT_EQ(7, copied.get_max_concurrency());
+  EXPECT_NE(endpoint.get_url().ptr(), copied.get_url().ptr());
+  endpoint.reset();
+  EXPECT_EQ(1, endpoint.get_max_concurrency());
+  EXPECT_EQ(7, copied.get_max_concurrency());
+}
+
+TEST(AiEndpoint, ConcurrencyIntegerBounds)
+{
+  ObArenaAllocator alloc;
+  for (const char *value : {"0", "-1", "1025", "\"8\"", "1.5", "true", "null", "18446744073709551615"}) {
+    SCOPED_TRACE(value);
+    ObSqlString config;
+    ASSERT_EQ(OB_SUCCESS, config.append_fmt("{\"ai_model_name\":\"contract_model\",\"url\":\"http://127.0.0.1:19999/\",\"provider\":\"openai\",\"access_key\":\"test-key\",\"max_concurrency\":%s}", value));
+    ObString json = config.string();
+    ObJsonObject *object = nullptr;
+    ASSERT_EQ(OB_SUCCESS, ObAIFuncJsonUtils::get_json_object_form_str(alloc, json, object));
+    oceanbase::share::ObAiModelEndpointInfo endpoint;
+    EXPECT_EQ(OB_AI_FUNC_PARAM_VALUE_INVALID, endpoint.parse_from_json_base(alloc, ObString("contract_endpoint"), *object));
+    EXPECT_EQ(1, endpoint.get_max_concurrency());
+  }
+  ObString config("{\"ai_model_name\":\"contract_model\",\"url\":\"http://127.0.0.1:19999/\",\"provider\":\"openai\",\"access_key\":\"test-key\",\"max_concurrency\":1024}");
+  ObJsonObject *object = nullptr;
+  ASSERT_EQ(OB_SUCCESS, ObAIFuncJsonUtils::get_json_object_form_str(alloc, config, object));
+  oceanbase::share::ObAiModelEndpointInfo endpoint;
+  ASSERT_EQ(OB_SUCCESS, endpoint.parse_from_json_base(alloc, ObString("contract_endpoint"), *object));
+  EXPECT_EQ(1024, endpoint.get_max_concurrency());
+}
+
 int main(int argc, char **argv) { ::testing::InitGoogleTest(&argc, argv); return RUN_ALL_TESTS(); }

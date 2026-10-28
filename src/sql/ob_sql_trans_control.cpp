@@ -655,7 +655,7 @@ int ObSqlTransControl::stmt_setup_snapshot_(ObSQLSessionInfo *session,
   bool can_plain_insert = false;
   if (session->is_ai_column_internal() && session->get_ai_column_read_snapshot() != nullptr) {
     // Strict preflight reads exactly the outer statement snapshot.
-    snapshot = *session->get_ai_column_read_snapshot();
+    ret = snapshot.assign(*session->get_ai_column_read_snapshot());
   } else if (cl == ObConsistencyLevel::WEAK || cl == ObConsistencyLevel::FROZEN) {
     SCN snapshot_version = SCN::min_scn();
     if (OB_FAIL(txs->get_weak_read_snapshot_version(session->get_ob_max_read_stale_time(),

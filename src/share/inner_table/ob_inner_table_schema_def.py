@@ -2442,7 +2442,8 @@ all_ai_model_endpoint_def = dict(
         ('request_model_name', 'varchar:128', 'true'),
         ('parameters', 'varchar:2048', 'true'),
         ('request_transform_fn', 'varchar:64', 'true'),
-        ('response_transform_fn', 'varchar:64', 'true')
+        ('response_transform_fn', 'varchar:64', 'true'),
+        ('max_concurrency', 'int', 'false', '1')
     ]
 )
 def_table_schema(**all_ai_model_endpoint_def)
@@ -2491,8 +2492,9 @@ def_table_schema(
     table_type='SYSTEM_TABLE', gm_columns=['gmt_create', 'gmt_modified'],
     is_cluster_private=False, meta_record_in_sys=False,
     rowkey_columns=[('table_id', 'int'), ('column_id', 'int'),
-                    ('request_id', 'varchar:128'), ('rowkey_predicate', 'varchar:2048')],
+                    ('request_id', 'varchar:128'), ('rowkey_hash', 'varchar:64')],
     normal_columns=[
+        ('rowkey_predicate', 'longtext', 'false'),
         ('definition_version', 'int', 'false'),
         ('eligible_ts', 'timestamp:6', 'false'),
         ('state', 'int', 'false', '0'),
@@ -13855,7 +13857,8 @@ def_table_schema(
       REQUEST_MODEL_NAME,
       PARAMETERS,
       REQUEST_TRANSFORM_FN,
-      RESPONSE_TRANSFORM_FN
+      RESPONSE_TRANSFORM_FN,
+      MAX_CONCURRENCY
     FROM oceanbase.__all_ai_model_endpoint WHERE ENDPOINT_ID != -1;
   """.replace("\n", " ")
 )

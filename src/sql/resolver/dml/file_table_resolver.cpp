@@ -33,7 +33,13 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &node, TableItem *&it
       ObString key(option->children_[0]->str_len_, option->children_[0]->str_value_);
       ParseNode *value = option->children_[1];
       ObJsonNode *json = nullptr;
-      if (options.get_value(key) != nullptr)
+      if (key.case_compare("sample_size") == 0 &&
+          (value->type_ != T_INT || value->value_ != -1))
+      {
+        ret = OB_NOT_SUPPORTED;
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "File SQL sample_size other than -1");
+      }
+      else if (options.get_value(key) != nullptr)
       {
         ret = OB_INVALID_ARGUMENT;
       }
@@ -137,7 +143,7 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &node, TableItem *&it
             ObAccuracy accuracy = ObAccuracy::DDL_DEFAULT_ACCURACY[meta.get_type()];
             if (meta.get_type() == ObDateTimeType)
             {
-              accuracy.set_scale(6);
+              accuracy.set_scale(binding.scales[i]);
             }
             if (meta.get_type() == ObVarcharType)
             {
@@ -158,6 +164,11 @@ int ObDMLResolver::resolve_file_table_item(const ParseNode &node, TableItem *&it
             {
               column->expr_->set_collation_level(CS_LEVEL_IMPLICIT);
               column->expr_->clear_explicited_referece();
+              if (binding.nullable[i] == 0) {
+                column->expr_->set_result_flag(NOT_NULL_FLAG);
+              } else {
+                column->expr_->unset_result_flag(NOT_NULL_FLAG);
+              }
             }
           }
           get_stmt()->get_query_ctx()->disable_udf_parallel_ = true;

@@ -17501,7 +17501,18 @@ file_copy_option { $$ = $1; }
 { malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3); }
 ;
 file_copy_option:
-relation_name signed_literal
+relation_name
+{
+  if (strcasecmp($1->str_value_, "header") != 0) {
+    yyerror(&@1, result, "only COPY HEADER may omit its value"); YYERROR;
+  }
+  ParseNode *value = NULL;
+  malloc_terminal_node(value, result->malloc_pool_, T_BOOL);
+  value->value_ = 1;
+  value->is_forbid_parameter_ = 1;
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_OPTION, 2, $1, value);
+}
+| relation_name signed_literal
 { malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_OPTION, 2, $1, $2); }
 | relation_name relation_name
 { $2->type_ = T_VARCHAR; $2->is_forbid_parameter_ = 1; malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_OPTION, 2, $1, $2); }

@@ -1,0 +1,57 @@
+# Local regression: binary/UTF-8 keys, 16 KiB native keys and out-of-row task predicates.
+--disable_query_log
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py start 19127
+--disable_warnings
+drop database if exists ai_column_key_encoding;
+--enable_warnings
+create database ai_column_key_encoding;
+--error 0,11112
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('key_encoding_ep');
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL('key_encoding_model');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('key_encoding_model', '{"type":"completion","model_name":"mock-complete"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('key_encoding_ep', '{"ai_model_name":"key_encoding_model","url":"http://127.0.0.1:19127/v1/chat/completions","access_key":"local-key","provider":"openai","request_model_name":"mock-complete"}');
+create table ai_column_key_encoding.binary_keys(id varbinary(16384) primary key, content varchar(50), title varchar(20), result varchar(100) AI COLUMN (AI_COMPLETE('key_encoding_model',content)) WITH(max_retries=0));
+create table ai_column_key_encoding.utf8_keys(id varchar(2) character set utf8mb4 primary key, content varchar(50), title varchar(20), result varchar(100) AI COLUMN (AI_COMPLETE('key_encoding_model',content)) WITH(max_retries=0));
+create table ai_column_key_encoding.long_keys(id varchar(1024) character set utf8mb4 primary key, content varchar(50), title varchar(20), result varchar(100) AI COLUMN (AI_COMPLETE('key_encoding_model',content)) WITH(max_retries=0));
+start transaction;
+insert into ai_column_key_encoding.binary_keys(id,content) values(X'ff','binary'),(REPEAT(X'80',16384),'binary');
+insert into ai_column_key_encoding.utf8_keys(id,content) values(CONVERT(X'e994ae' USING utf8mb4),'utf8');
+insert into ai_column_key_encoding.long_keys(id,content) values(REPEAT('a',1024),'long');
+select count(*)=4 and count(distinct rowkey_hash)=4 and max(length(rowkey_predicate))>32768 as full_keys_have_distinct_hashes
+from oceanbase.__all_ai_column_task task join oceanbase.__all_table t on task.table_id=t.table_id join oceanbase.__all_database d on t.database_id=d.database_id where d.database_name='ai_column_key_encoding';
+commit;
+let $remaining=150;
+let $ready=0;
+while ($remaining)
+{
+ let $ready = `select (select count(*) from ai_column_key_encoding.binary_keys where result='mock:binary')+(select count(*) from ai_column_key_encoding.utf8_keys where result='mock:utf8')+(select count(*) from ai_column_key_encoding.long_keys where result='mock:long')=4`;
+ if ($ready == 1) { let $remaining=0; }
+ if ($ready == 0) { --real_sleep 0.1
+ dec $remaining; }
+}
+eval select $ready=1 as all_key_encodings_publish;
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py reset 19127
+update ai_column_key_encoding.binary_keys set title='unrelated';
+update ai_column_key_encoding.utf8_keys set title='unrelated';
+update ai_column_key_encoding.long_keys set title='unrelated';
+--real_sleep 1
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py assert 19127 no-requests
+start transaction;
+update ai_column_key_encoding.binary_keys set content='pending';
+update ai_column_key_encoding.utf8_keys set content='pending';
+update ai_column_key_encoding.long_keys set content='pending';
+select count(*)=4 as all_key_encodings_requeue
+from oceanbase.__all_ai_column_task task join oceanbase.__all_table t on task.table_id=t.table_id join oceanbase.__all_database d on t.database_id=d.database_id where d.database_name='ai_column_key_encoding';
+delete from ai_column_key_encoding.binary_keys;
+delete from ai_column_key_encoding.utf8_keys;
+delete from ai_column_key_encoding.long_keys;
+select count(*)=0 as all_key_encodings_delete_tasks
+from oceanbase.__all_ai_column_task task join oceanbase.__all_table t on task.table_id=t.table_id join oceanbase.__all_database d on t.database_id=d.database_id where d.database_name='ai_column_key_encoding';
+rollback;
+select (select count(*)=2 and min(length(id))=1 and max(length(id))=16384 from ai_column_key_encoding.binary_keys) and (select hex(id)='E994AE' from ai_column_key_encoding.utf8_keys) and (select length(id)=1024 from ai_column_key_encoding.long_keys) as rollback_preserves_key_bytes;
+drop database ai_column_key_encoding;
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('key_encoding_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('key_encoding_model');
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py stop 19127
+--enable_query_log

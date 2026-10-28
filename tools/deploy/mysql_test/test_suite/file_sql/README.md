@@ -43,12 +43,15 @@ COPY 将查询结果写入同目录独占临时文件，成功后原子 no-repla
 在可构建 seekdb 的 Linux 环境：
 
 ```bash
-./build.py build -j4 seekdb
-./build.py test -j4 //unittest/sql/parser:test_file_sql_parser \
-  //unittest/sql/engine/basic:test_file_scan_utils --test_output=errors
+./build.sh release --make -j2
+./build.sh release -DSEEKDB_BUILD_COMPETITION_TESTS=ON
+cmake --build build_release --target competition_unit_tests --parallel 2
+ctest --test-dir build_release -L competition --output-on-failure
 (cd rust && cargo test -p file-sql)
 (cd rust && cargo clippy -p file-sql --all-targets -- -D warnings)
 ```
+
+当前比赛基线采用 `build.sh`/CMake；原生测试目标及依赖说明见 [unittest/README.competition.md](../../../../../unittest/README.competition.md)。生产构建不自动构建测试目标。
 
 运行专用实例（默认端口 12883，socket `/tmp/seekdb-file-sql-instance/run/sql.sock`），安装测试夹具依赖 `pyarrow==20.0.0`。以下脚本只更改专用实例的 `secure_file_priv`，结束后恢复；不创建管理员账号或授予权限。不要在共享生产实例执行。
 
@@ -59,20 +62,34 @@ FILE_SQL_RESOURCE_TEST=1 python3 tools/deploy/mysql_test/test_suite/file_sql/run
   FileSQL.test_streaming_memory_and_descriptors
 ```
 
-通过 `FILE_SQL_TEST_PORT` 和 `FILE_SQL_TEST_SOCKET` 指定实例。`run_mysqltest.py` 使用仓库 mysqltest，五组测试的部署和清理由 include 脚本完成；`--record` 仅用于有意更新并人工核对预期结果。资源测试生成约 206 MB CSV，采样服务器 RSS，并循环成功/失败查询及超时查询检查 FD 数量。
+通过 `FILE_SQL_TEST_PORT` 和 `FILE_SQL_TEST_SOCKET` 指定实例。`run_mysqltest.py` 使用仓库 mysqltest，五组自建测试的部署和清理由 include 脚本完成；`--record` 仅作用于 `local/` 中自建用例，且仅用于有意更新并人工核对预期结果。资源测试生成约 206 MB CSV，采样服务器 RSS，并循环成功/失败查询及超时查询检查 FD 数量。
 
 本地测试覆盖八项功能及 COPY；不代表组委会隐藏测试或正式评分结果。完整仓库 Sanity、内存插桩和全部普通 SQL 回归应由具备相应环境的 CI 继续执行。
 
-## 本次本地验证记录（2026-10-26）
+## 历史本地验证记录（2026-10-26）
+
+以下记录对应当时的构建和自建测试，不能证明当前比赛基线构建或官方用例通过。
 
 - seekdb 原生构建成功；两个 C++ 测试目标、四个用例通过。
 - Rust 10 个用例通过，Clippy `-D warnings` 通过；含畸形 Parquet Footer/类型标签/负偏移、页头并发变化、CSV BOM 和 COPY NULL 标记边界。
 - SQL 集成 16 项通过，包含 COPY 表/查询导出、浮点等值读回、授权变化清理、USING JOIN、流式资源验证。混合压缩夹具只有 id 列使用 Snappy，其他列使用 Gzip；只查 id 成功、查 name 受控报错，证明列裁剪作用于实际数据读取。
-- 五组原生 mysqltest 结果已核对并回放；现有 `expr/func_length.test` 回归通过。
+- 当时的五组自建原生 mysqltest 结果已核对并回放；现有 `expr/func_length.test` 回归通过。
 - 206,288,901 字节 CSV 扫描：两次采样 RSS 增量分别为 256 KiB、0 KiB，FD 数均保持 18→18。该结果是本次运行观测，不代表独立内存泄漏检测。
 - 独立代码审查发现的问题均已修复并补回归。
-- Sanity 命令 `./build.py test -j4 --sanity //unittest/sql/engine/basic:test_file_scan_utils --test_output=errors` 在分析阶段失败：`//bazel/third_party:sanity_pass` 无文件，环境缺少 `libsanitypass.so`。未完成 Sanity/ASan 检测及全仓库 SQL 回归。
+- 当时的旧 Bazel Sanity 命令在分析阶段失败：`//bazel/third_party:sanity_pass` 无文件，环境缺少 `libsanitypass.so`。未完成 Sanity/ASan 检测及全仓库 SQL 回归。
 
 ## 2026-competition 合并约定
 
-官方 `file_sql_basic.test`、对应预期结果和 `data/basic.csv`/`data/basic.jsonl` 保持比赛分支版本。此前自建的基础用例移至 `local/file_sql_basic_local.test`，自建夹具为 `local/basic.csv`/`local/basic.jsonl`；生成器在隔离目录中仍以 `basic.csv`/`basic.jsonl` 部署，避免两套数据互相覆盖。`run_mysqltest.py` 运行官方 `t/` 中除官方基础用例外的四组自建用例，以及 `local/` 下的自建基础用例；官方基础用例通过比赛部署脚本运行，依赖 `OBSERVER_DIR` 等环境。AI 同名自建用例保留在 `ai_function/local/` 下。历史验证记录仅对应自建用例；官方新增测试需要单独验证。
+官方 `file_sql_basic.test`、对应预期结果和 `data/basic.csv`/`data/basic.jsonl` 保持比赛分支版本。此前自建的基础用例移至 `local/file_sql_basic_local.test`，自建夹具为 `local/basic.csv`/`local/basic.jsonl`；生成器在隔离目录中仍以 `basic.csv`/`basic.jsonl` 部署，避免两套数据互相覆盖。四组自建用例及其结果、生成器与夹具控制脚本也统一放在 `local/`，`run_mysqltest.py` 仅发现该目录的五组自建用例；官方基础用例使用下述官方运行器，或在完整比赛部署环境中执行。AI 同名自建用例保留在 `ai_function/local/` 下。历史验证记录仅对应自建用例；官方新增测试需要单独验证。
+
+## 当前官方用例入口
+
+在已经启动的专用实例上执行：
+
+```bash
+python3 unittest/competition/run_official.py --verify-only
+python3 unittest/competition/run_official.py --port 12883 \
+  --socket /tmp/seekdb-file-sql-instance/run/sql.sock file_sql_basic
+```
+
+省略最后的用例名会运行九组官方用例，含五组 AI COLUMN、AI function enhancement、AI Prompt、AI Endpoint DDL 和 File SQL basic。运行器直接读取原始官方测试，复制预期结果到临时目录比对；只在临时 include 覆盖目录替换 File SQL 的 SSH/admin 文件部署步骤，记录文件校验和、实际部署清单、日志和失败结果。它不修改官方预期，不使用 `--record`。环境约束与输出位置见 [官方运行器说明](../../../../../unittest/competition/README.md)。本节提供执行入口，不表示官方测试已经通过。

@@ -464,6 +464,15 @@ fn columns(reader: &SerializedFileReader<BoundedFile>) -> Result<Vec<Column>> {
                 name: col.name().into(),
                 kind: kind(col)?,
                 exact_int: true,
+                nullable: col.max_def_level() > 0,
+                scale: match col.logical_type_ref() {
+                    Some(LogicalType::Timestamp(t)) => match t.unit {
+                        TimeUnit::MILLIS => 3,
+                        TimeUnit::MICROS => 6,
+                        _ => 0, // Unsupported units are rejected by kind().
+                    },
+                    _ => 0,
+                },
             })
         })
         .collect()

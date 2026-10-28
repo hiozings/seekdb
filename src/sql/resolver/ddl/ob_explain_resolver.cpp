@@ -79,8 +79,9 @@ int ObExplainResolver::resolve(const ParseNode &parse_tree)
               const unsigned char c=name.ptr()[j];char hex[2]={digits[c>>4],digits[c&15]};ret=text.append(hex,2);
             }
             if (OB_SUCC(ret)) {
-              ret=text.append_fmt("' AS CHAR CHARACTER SET utf8mb4) AS `Field`, '%s' AS `Type`, 'YES' AS `Null`, '' AS `Key`, NULL AS `Default`, '' AS `Extra`",
-                  ob_obj_type_str(item.expr_->get_data_type()));
+              ret=text.append_fmt("' AS CHAR CHARACTER SET utf8mb4) AS `column_name`, '%s' AS `column_type`, '%s' AS `null`, NULL AS `key`, NULL AS `default`, NULL AS `extra`",
+                  item.expr_->get_data_type() == ObTinyIntType ? "BOOLEAN" : ob_obj_type_str(item.expr_->get_data_type()),
+                  item.expr_->is_not_null_for_read() ? "NO" : "YES");
             }
           }
           if (OB_SUCC(ret)) {

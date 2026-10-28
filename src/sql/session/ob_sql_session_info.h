@@ -230,10 +230,7 @@ public:
   public:
     ObAuditRecordData audit_record_;
     SessionType session_type_;
-    const transaction::ObTxReadSnapshot *ai_column_read_snapshot_ = nullptr;
-  bool ai_column_internal_ = false; // Native capability, never exposed as a SQL variable.
-  uint64_t ai_column_retry_column_id_ = 0;
-  bool inner_flag_;
+    bool inner_flag_;
     bool is_ignore_stmt_;
     uint64_t db_id_;
     common::ObSqlString db_name_;
@@ -888,6 +885,9 @@ private:
   static const int64_t MAX_STORED_PLANS_COUNT = 10240;
   static const int64_t MAX_IPADDR_LENGTH = 64;
 private:
+  const transaction::ObTxReadSnapshot *ai_column_read_snapshot_ = nullptr;
+  bool ai_column_internal_ = false; // Native capability, never exposed as a SQL variable.
+  uint64_t ai_column_retry_column_id_ = 0;
   bool is_inited_;
   // store the warning message from the most recent statement in the current session
   common::ObWarningBuffer warnings_buf_;

@@ -414,6 +414,7 @@ public:
                        K_(view_check_exprs),
                        K_(is_primary_index),
                        K_(is_table_without_pk),
+                       K_(has_ai_columns),
                        KPC_(trans_info_expr));
 
   ObDMLOpType dml_type_;
@@ -435,6 +436,7 @@ public:
   ExprFixedArray view_check_exprs_;
   bool is_primary_index_;
   bool is_table_without_pk_;
+  bool has_ai_columns_;
   bool reserved_advanced_trigger_;
   ObExpr *trans_info_expr_;
   bool is_vec_hnsw_index_vid_opt_;
@@ -454,6 +456,7 @@ protected:
       view_check_exprs_(alloc),
       is_primary_index_(false),
       is_table_without_pk_(false),
+      has_ai_columns_(false),
       reserved_advanced_trigger_(false),
       trans_info_expr_(nullptr),
       is_vec_hnsw_index_vid_opt_(false)
