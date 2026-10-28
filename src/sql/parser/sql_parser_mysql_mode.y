@@ -17506,7 +17506,7 @@ relation_name signed_literal
 | relation_name relation_name
 { $2->type_ = T_VARCHAR; $2->is_forbid_parameter_ = 1; malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_OPTION, 2, $1, $2); }
 | NULLX signed_literal
-{ ParseNode *name = NULL; make_name_node(name, result->malloc_pool_, "null"); malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_OPTION, 2, name, $2); }
+{ ParseNode *name = NULL; (void)$1; make_name_node(name, result->malloc_pool_, "null"); malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_OPTION, 2, name, $2); }
 ;
 file_copy_stmt:
 COPY select_with_parens TO literal file_copy_options
