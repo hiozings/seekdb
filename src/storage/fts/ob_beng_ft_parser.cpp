@@ -42,25 +42,6 @@ int ObBEngFTParser::get_next_token(
   word_freq = 0;
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
-  } else if (ascii_document_) {
-    // The document buffer belongs to the caller's allocator, so words remain
-    // valid after subsequent calls and even after this parser is reset.
-    bool found = false;
-    while (OB_SUCC(ret) && !found) {
-      if (OB_FAIL(ascii_tokenizer_.get_next(token, token_freq))) {
-      } else {
-        int64_t begin = 0, end = token.len_;
-        while (begin < end && !ob_isalnum(analysis_ctx_.cs_, token.ptr_[begin])) { ++begin; }
-        while (end > begin && !ob_isalnum(analysis_ctx_.cs_, token.ptr_[end - 1])) { --end; }
-        if (begin < end) {
-          word = token.ptr_ + begin;
-          word_len = end - begin;
-          char_len = word_len;
-          word_freq = token_freq;
-          found = true;
-        }
-      }
-    }
   } else if (OB_ISNULL(token_stream_)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(token_stream_->get_next(token, token_freq))) {
@@ -95,26 +76,7 @@ int ObBEngFTParser::init(ObFTParserParam *param)
     analysis_ctx_.cs_ = param->cs_;
     analysis_ctx_.filter_stopword_ = false;
     analysis_ctx_.need_grouping_ = false;
-    // Bound the extra contiguous buffer; long, non-ASCII or other-collation
-    // inputs retain the streaming analyzer and its original casing semantics.
-    constexpr int64_t ASCII_BUFFER_LIMIT = 64 * 1024;
-    ascii_document_ = param->ft_length_ <= ASCII_BUFFER_LIMIT
-        && (param->cs_ == ObCharset::get_charset(CS_TYPE_UTF8MB4_BIN)
-            || param->cs_ == ObCharset::get_charset(CS_TYPE_UTF8MB4_GENERAL_CI));
-    for (int64_t i = 0; ascii_document_ && i < param->ft_length_; ++i) {
-      ascii_document_ = static_cast<unsigned char>(param->fulltext_[i]) < 0x80;
-    }
-    if (ascii_document_) {
-      ObString lower;
-      if (OB_FAIL(ObCharset::tolower(param->cs_, doc_.get_string(), lower, allocator_))) {
-      } else {
-        doc_.set_string(lower);
-        if (OB_FAIL(ascii_tokenizer_.open(doc_, param->cs_))) {
-        } else {
-          is_inited_ = true;
-        }
-      }
-    } else if (OB_FAIL(english_analyzer_.init(analysis_ctx_, *param->allocator_))) {
+    if (OB_FAIL(english_analyzer_.init(analysis_ctx_, *param->allocator_))) {
     } else if (OB_FAIL(segment(doc_, token_stream_))) {
     } else if (OB_ISNULL(token_stream_)) {
       ret = OB_ERR_UNEXPECTED;
@@ -146,8 +108,6 @@ void ObBEngFTParser::reset()
 {
   analysis_ctx_.reset();
   english_analyzer_.reset();
-  ascii_tokenizer_.reset();
-  ascii_document_ = false;
   doc_.reset();
   token_stream_ = nullptr;
   is_inited_ = false;
