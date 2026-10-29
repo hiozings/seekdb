@@ -1,0 +1,6 @@
+{
+  "passed": false,
+  "idle_task_sql_before": 22,
+  "idle_task_sql_after": 62,
+  "idle_task_sql_executions": 40
+}

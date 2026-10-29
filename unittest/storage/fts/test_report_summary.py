@@ -20,6 +20,10 @@ class ReportSummaryTests(unittest.TestCase):
                     metrics[name] = 50
             metrics['build_ik_all_sec'] = 200 # A regression must remain negative.
             (directory / '2-candidate.report').write_text('\n'.join(f'{k}: {v}' for k, v in metrics.items()))
+            (directory / '3-previous.report').write_text((directory / '1-baseline.report').read_text())
+            previous = summary.summarize([directory], baseline_label='previous')
+            self.assertEqual('previous', previous['baseline_label'])
+            self.assertAlmostEqual(1 / 3, previous['local_mean_improvement'])
             result = summary.summarize([directory])
             self.assertAlmostEqual(0, result['categories']['build']['improvement'])
             self.assertAlmostEqual(1 / 3, result['local_mean_improvement'])

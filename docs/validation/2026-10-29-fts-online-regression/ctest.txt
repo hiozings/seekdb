@@ -1,0 +1,27 @@
+Internal ctest changing into directory: /work/build_release
+Test project /work/build_release
+    Start 1: test_file_sql_parser
+1/9 Test #1: test_file_sql_parser .............   Passed    0.34 sec
+    Start 2: test_file_scan_utils
+2/9 Test #2: test_file_scan_utils .............   Passed    0.34 sec
+    Start 3: test_ai_column_parser
+3/9 Test #3: test_ai_column_parser ............   Passed    0.32 sec
+    Start 4: ob_expr_ai_prompt_test
+4/9 Test #4: ob_expr_ai_prompt_test ...........   Passed    0.36 sec
+    Start 5: test_ob_openai_utils
+5/9 Test #5: test_ob_openai_utils .............   Passed    0.41 sec
+    Start 6: test_ob_ai_rerank
+6/9 Test #6: test_ob_ai_rerank ................   Passed    0.38 sec
+    Start 7: test_ob_ai_embed_batch
+7/9 Test #7: test_ob_ai_embed_batch ...........   Passed    0.39 sec
+    Start 8: test_ai_column_worker_state
+8/9 Test #8: test_ai_column_worker_state ......   Passed    0.00 sec
+    Start 9: test_fts_hotpath
+9/9 Test #9: test_fts_hotpath .................   Passed    0.48 sec
+
+100% tests passed, 0 tests failed out of 9
+
+Label Time Summary:
+competition    =   3.03 sec*proc (9 tests)
+
+Total Test time (real) =   3.04 sec

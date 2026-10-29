@@ -600,6 +600,55 @@ int recover_publication()
   return ret;
 }
 } // namespace
+int AiColumnWorker::refresh_work_presence()
+{
+  int ret = OB_SUCCESS;
+  if (!has_ai_work_) {
+    ObSchemaGetterGuard guard;
+    int64_t version = -1;
+    if (OB_FAIL(GCTX.schema_service_->get_runtime_schema_guard(guard))) {
+    } else if (OB_FAIL(guard.get_schema_version(version))) {
+    } else if (version != checked_schema_version_) {
+      ObSEArray<const ObSimpleTableSchemaV2 *, 64> tables;
+      if (OB_FAIL(guard.get_table_schemas_in_runtime(tables))) {
+      }
+      for (int64_t i = 0; OB_SUCC(ret) && !has_ai_work_ && i < tables.count(); ++i) {
+        const auto *simple = tables.at(i);
+        if (simple != nullptr && (simple->is_user_table() || simple->is_tmp_table())) {
+          const ObTableSchema *table = nullptr;
+          if (OB_FAIL(guard.get_table_schema(simple->get_table_id(), table))) {
+          } else if (table == nullptr) {
+            ret = OB_SCHEMA_EAGAIN;
+          } else {
+            for (auto column = table->column_begin(); !has_ai_work_ && column != table->column_end(); ++column) {
+              has_ai_work_ = (*column)->is_ai_column();
+            }
+          }
+        }
+      }
+      // A restart may leave orphaned tasks even after the last AI table was
+      // dropped. Inspect the persistent queue once before entering schema-only
+      // idle checks; no in-memory notification is required for crash recovery.
+      if (OB_SUCC(ret) && !has_ai_work_ && !checked_durable_queue_) {
+        ObISQLClient::ReadResult result;
+        if (OB_FAIL(GCTX.sql_proxy_->read(result, "SELECT 1 FROM oceanbase.__all_ai_column_task LIMIT 1"))) {
+        } else if (result.get_result() == nullptr) {
+          ret = OB_ERR_UNEXPECTED;
+        } else if (OB_FAIL(result.get_result()->next())) {
+          if (ret == OB_ITER_END) { ret = OB_SUCCESS; }
+        } else {
+          has_ai_work_ = true;
+        }
+      }
+      if (OB_SUCC(ret)) {
+        checked_durable_queue_ = true;
+        checked_schema_version_ = version;
+      }
+    }
+  }
+  return ret;
+}
+
 int AiColumnWorker::process_one()
 {
   int ret = OB_SUCCESS;
@@ -610,6 +659,8 @@ int AiColumnWorker::process_one()
   Task task;
   bool found = false;
   if (GCTX.sql_proxy_ == nullptr || GCTX.schema_service_ == nullptr) { ret = OB_NOT_INIT; }
+  else if (OB_FAIL(refresh_work_presence())) {}
+  else if (!has_ai_work_) {} // No AI definitions/tasks: avoid unrelated SQL and transactions.
   else {
     const int recovery_ret = recover_publication();
     if (recovery_ret != OB_SUCCESS && recovery_ret != OB_TABLE_NOT_EXIST) {

@@ -39,3 +39,7 @@ python3 /work/unittest/competition/test_ai_recovery.py \
 默认运行集包含官方 `ai_model_endpoint_ddl.test`，覆盖 `MAX_CONCURRENCY` 与权限矩阵。运行器只在专用可丢弃实例上准备 `admin@127.0.0.1`；任意 host 已存在 `admin` 或 `test_ai_user` 时直接拒绝，不覆盖现有账号。只授予 CREATE USER、test.* 的 SELECT、CREATE/ALTER/DROP AI MODEL；后四项带 GRANT OPTION，以便官方测试逐步授权。另授予 mysql.user 的 SELECT（不带转授权），供官方 SHOW GRANTS 查看其他测试用户的授权；没有 ALL 或 SUPER。MySQL 的 GRANT OPTION 按权限范围工作，不能把全局授权能力理解为独立于其他已持有全局权限。
 
 密码每次随机生成，仅通过 mysql 标准输入和权限 0600 的临时 driver 传递；driver 在 finally 删除，日志中若出现该随机密码则脱敏。官方 test_ai_user 创建/授权/断言仍由原始测试执行；结束或失败时回收本次拥有的两个账号，部分 setup 失败也回收已创建 admin。失败清理会记录并使运行失败；不会为通过用例拓宽权限。此夹具不修改任何全局设置。本地执行结果见 `docs/validation/2026-10-28-evaluation-fixes/official-summary.json`；离线检查本身不代表数据库权限矩阵通过。
+
+## 无AI业务时的后台开销回归
+
+在专用容器执行 `python3 unittest/competition/test_ai_idle_worker.py --binary /path/to/seekdb`。脚本自己启动12888实例/19130 Mock并清理进程，以计划缓存EXECUTIONS检查两秒内任务SQL执行增量为零，然后创建第一张AI列表并检查严格读取和任务排空。加 `--activate-by-alter` 验证首次ALTER新增AI列与已有行回填。它不关闭后台功能，也不修改worker运行参数。中断恢复继续使用 `test_ai_recovery.py`。

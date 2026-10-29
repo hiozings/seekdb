@@ -46,3 +46,19 @@ python3 -m unittest discover -s unittest/storage/fts -p test_report_summary.py
 输出目录必须不存在，端口必须空闲。按本机实际 CPU 拓扑选择亲和性，两版本保持相同。运行器只停止自身 Popen 创建的数据库进程，不连接已有实例。顺序为基线、候选、候选、基线、基线、候选；每轮重启，内存2G/cpu_count2，完整加载20000行，BATCH500、ROUNDS3000、QUERY_ROUNDS200、SAMPLES3、WARMUP30、SKIP_LOAD0。官方脚本和其计时逻辑不变。
 
 每轮独立报告、日志和二进制 SHA-256 保存在输出目录，所有样本进入均值。汇总先算类别内各项提升，再对三类别等权平均，保留负提升；缺指标或参数不一致会拒绝。`ci_reference_only` 使用原始固定基线，仅供异地环境参考，不代表平台得分。本地前后改善单列为 `local_mean_improvement`。多个目录可一起汇总，不挑选最优轮次。
+
+## 官方初始基线和线上旧提交的三版本对照
+
+`run_fts_comparison.py` 现在为每轮创建独立数据目录，避免不同提交的系统Schema或历史状态干扰结果。指定 `--previous /path/to/old-submission/seekdb` 后执行九轮均衡交错，每个版本三轮；`--memory-limit 1G` 可单独进行资源压力组。资源配置不同的报告不得混算。
+
+```sh
+python3 unittest/storage/fts/run_fts_comparison.py \
+  --baseline /path/to/5bce9e0/seekdb --previous /path/to/77fbb605/seekdb \
+  --candidate /path/to/fixed/seekdb --output /tmp/fts-three-way-new
+python3 unittest/storage/fts/summarize_fts_reports.py /tmp/fts-three-way-new \
+  --output /tmp/vs-official.json
+python3 unittest/storage/fts/summarize_fts_reports.py /tmp/fts-three-way-new \
+  --baseline-label previous --output /tmp/vs-submission.json
+```
+
+BENG新增回归覆盖稳定词串生命周期、600词文档的调用方分配次数上限、分配失败后重试、两种UTF8排序规则的全部ASCII字节对、非ASCII回退及64KiB边界。可选微基准在同一二进制中对比保留的通用分析器和有界ASCII路径，仅作为分配/归一化阶段证据，不替代完整建索引测量。

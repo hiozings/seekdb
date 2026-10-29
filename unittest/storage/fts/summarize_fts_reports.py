@@ -12,9 +12,9 @@ score = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(score)
 
 
-def summarize(directories):
+def summarize(directories, baseline_label="baseline"):
     config = score.load_baseline(score.DEFAULT_BASELINE)
-    groups = {name: sorted(p for directory in directories for p in directory.glob('*-' + name + '.report'))
+    groups = {name: sorted(p for directory in directories for p in directory.glob('*-' + (baseline_label if name == 'baseline' else name) + '.report'))
               for name in ('baseline', 'candidate')}
     if not groups['baseline'] or len(groups['baseline']) != len(groups['candidate']):
         raise ValueError('equal nonzero numbers of baseline and candidate reports required')
@@ -37,7 +37,7 @@ def summarize(directories):
                            'before_runs': [r[metric] for r in reports['baseline']],
                            'after_runs': [r[metric] for r in reports['candidate']]})
         categories[name] = {'improvement': mean(v['improvement'] for v in values), 'metrics': values}
-    return {'runs_per_version': len(groups['baseline']), 'reports': {n: [str(p) for p in ps] for n, ps in groups.items()},
+    return {'baseline_label': baseline_label, 'runs_per_version': len(groups['baseline']), 'reports': {n: [str(p) for p in ps] for n, ps in groups.items()},
             'categories': categories, 'local_mean_improvement': mean(c['improvement'] for c in categories.values()),
             'ci_reference_only': score.calculate_score(means['candidate'], config),
             'note': 'Local measurements are not official CI scores. No per-metric negative clipping. All runs included.'}
@@ -47,8 +47,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('directories', type=Path, nargs='+')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--baseline-label', choices=['baseline', 'previous'], default='baseline')
     args = parser.parse_args()
-    result = summarize(args.directories)
+    result = summarize(args.directories, args.baseline_label)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
     print('Local weighted time reduction: %.3f%% (%d runs/version)' %
           (100 * result['local_mean_improvement'], result['runs_per_version']))

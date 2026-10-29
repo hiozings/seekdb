@@ -37,6 +37,8 @@ public:
     : allocator_(allocator),
       analysis_ctx_(),
       english_analyzer_(),
+      ascii_tokenizer_(),
+      ascii_document_(false),
       doc_(),
       token_stream_(nullptr),
       is_inited_(false)
@@ -60,6 +62,8 @@ private:
   common::ObIAllocator &allocator_;
   share::ObTextAnalysisCtx analysis_ctx_;
   share::ObEnglishTextAnalyzer english_analyzer_;
+  share::ObTextWhitespaceTokenizer ascii_tokenizer_;
+  bool ascii_document_;
   common::ObDatum doc_;
   share::ObITokenStream *token_stream_;
   bool is_inited_;

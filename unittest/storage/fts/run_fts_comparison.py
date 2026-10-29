@@ -32,10 +32,11 @@ def execute(args):
         probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         probe.bind(('127.0.0.1', args.port))
     args.output.mkdir(parents=True, exist_ok=False)
-    base = args.output / 'instance'
-    base.mkdir()
     hashes = {}
-    for name, path in [('baseline', args.baseline), ('candidate', args.candidate)]:
+    binaries = [('baseline', args.baseline), ('candidate', args.candidate)]
+    if args.previous is not None:
+        binaries.append(('previous', args.previous))
+    for name, path in binaries:
         digest = hashlib.sha256()
         with path.open('rb') as binary:
             for chunk in iter(lambda: binary.read(1024 * 1024), b''):
@@ -44,13 +45,20 @@ def execute(args):
     (args.output / 'binaries.json').write_text(json.dumps(hashes, indent=2))
     mysql = ['taskset', '-c', args.client_cpu, 'mysql', '-h127.0.0.1', '-P' + str(args.port), '-uroot', '--default-character-set=utf8mb4']
     order = ['baseline', 'candidate', 'candidate', 'baseline', 'baseline', 'candidate']
+    if args.previous is not None:
+        order = ['baseline', 'previous', 'candidate', 'candidate', 'baseline', 'previous',
+                 'previous', 'candidate', 'baseline']
     summaries = []
     for index, name in enumerate(order):
         label = f'{index + 1}-{name}'
         binary = getattr(args, name)
+        # Baselines from different commits can have different system schemas.
+        # Fresh data directories also equalize bootstrap/cache history.
+        base = args.output / (label + '.instance')
+        base.mkdir()
         server_command = ['taskset', '-c', args.server_cpus, str(binary), '--nodaemon',
                           '--base-dir=' + str(base), '--port=' + str(args.port),
-                          '--parameter', 'memory_limit=2G', '--parameter', 'cpu_count=2', '--log-level=WARN']
+                          '--parameter', 'memory_limit=' + args.memory_limit, '--parameter', 'cpu_count=2', '--log-level=WARN']
         process = None
         with (args.output / (label + '.server.log')).open('w') as server_log:
             try:
@@ -78,7 +86,7 @@ def execute(args):
                 print(label + ': complete', flush=True)
             finally:
                 stop(process)
-    print('PASS: six full benchmark runs; owned server stopped', flush=True)
+    print(f'PASS: {len(order)} full benchmark runs; owned server stopped', flush=True)
 
 
 if __name__ == '__main__':
@@ -86,7 +94,9 @@ if __name__ == '__main__':
     parser.add_argument('--baseline', type=Path, required=True)
     parser.add_argument('--candidate', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--previous', type=Path, help='Optional third binary for cumulative regression comparison')
     parser.add_argument('--port', type=int, default=12886)
     parser.add_argument('--server-cpus', default='8,10')
+    parser.add_argument('--memory-limit', default='2G')
     parser.add_argument('--client-cpu', default='12')
     execute(parser.parse_args())

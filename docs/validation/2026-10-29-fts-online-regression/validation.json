@@ -1,0 +1,48 @@
+{
+  "baseline_commit": "5bce9e06d1281347ad61344e4b01fab9158c58a2",
+  "previous_commit": "77fbb6050238bff41fece24e15f92afef0f86afa",
+  "branch": "feature/fts-performance",
+  "candidate": "uncommitted changes",
+  "source_validation": "All 9176 tracked files in the separately built 5bce source match git archive byte-for-byte.",
+  "production_build": "PASS for true5bce and candidate; same clang17 CMake release toolchain",
+  "native_tests": {
+    "ctest_targets": 9,
+    "fts_cases": 9,
+    "result": "PASS"
+  },
+  "official_mysqltests": {
+    "passed": 9,
+    "failed": 0
+  },
+  "idle_regression": {
+    "old_queue_queries_in_two_seconds": 40,
+    "fixed_queue_queries_in_two_seconds": 0,
+    "create_activation": "PASS",
+    "alter_activation": "PASS"
+  },
+  "durable_recovery": "PASS: SIGKILL, response loss, same directory restart, strict READY, queue drained, rollback no request",
+  "backfill_cleanup": "PASS after changing local test to wait at most15s for asynchronous marker cleanup; original expected result unchanged.",
+  "fts_differential": {
+    "vs_initial_cross_index_cases": 193,
+    "tokens_frequencies_ids_and_rank_ids": "PASS",
+    "same_index_vs_77fbb": "PASS:193 full outputs including exact relevance scores"
+  },
+  "benchmark_runs": {
+    "2G": 9,
+    "1G": 9,
+    "order": "baseline,previous,candidate,candidate,baseline,previous,previous,candidate,baseline",
+    "server_cpus": "8,10",
+    "client_cpu": "12",
+    "cpu_count": 2,
+    "full_reload_each_run": true,
+    "fresh_data_directory_each_run": true
+  },
+  "reviews": "Independent gpt-6-astra reviewed both BENG buffer and idle schema gate; no confirmed Major/Blocker.",
+  "limits": [
+    "Online BENG +79.90% was not reproduced in either local memory configuration. Exact cause of its extra4.257s remains unverified.",
+    "Provided online scores do not reproduce with checked-in fixed baseline; no scoring files changed.",
+    "Local build/token/query tradeoffs vary by memory group; no promise of recovered platform score or50% speedup."
+  ],
+  "git_actions": "No commit, merge or push.",
+  "cleanup": "Owned functional/benchmark/mock processes stopped; shared build/test containers retained."
+}

@@ -35,6 +35,17 @@ while ($remaining)
  dec $remaining; }
 }
 eval select $ready=1 as modified_definition_recomputes_rows;
+# READY row publication can precede the final empty-page backfill cleanup.
+# Wait for the asynchronous obligation rather than asserting the same instant.
+let $remaining=150;
+let $drained=0;
+while ($remaining)
+{
+ let $drained = `select count(*)=0 from oceanbase.__all_ai_column_task task join oceanbase.__all_table t on task.table_id=t.table_id join oceanbase.__all_database d on t.database_id=d.database_id where d.database_name='ai_column_ddl_backfill'`;
+ if ($drained == 1) { let $remaining=0; }
+ if ($drained == 0) { --real_sleep 0.1
+ dec $remaining; }
+}
 select count(*)=0 as backfill_and_row_tasks_drained
 from oceanbase.__all_ai_column_task task join oceanbase.__all_table t on task.table_id=t.table_id
 join oceanbase.__all_database d on t.database_id=d.database_id where d.database_name='ai_column_ddl_backfill';

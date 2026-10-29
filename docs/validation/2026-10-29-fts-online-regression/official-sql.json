@@ -1,0 +1,14 @@
+{
+  "failed": [],
+  "cases": [
+    "ai_column_ddl",
+    "ai_column_t1_dml",
+    "ai_column_worker",
+    "ai_column_retry_strict",
+    "ai_column_vector_index",
+    "ai_prompt",
+    "ai_function_enhancement",
+    "ai_model_endpoint_ddl",
+    "file_sql_basic"
+  ]
+}

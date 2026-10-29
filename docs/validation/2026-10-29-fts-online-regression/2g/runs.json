@@ -1,0 +1,182 @@
+[
+  {
+    "label": "1-baseline",
+    "binary": "/tmp/fts-regression-binaries/official-5bce-seekdb",
+    "sha256": "d1ed8d37c14f39f88c4689558fbed2c5826426e78b0a5975453abc9cfac8ece3",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/tmp/fts-regression-binaries/official-5bce-seekdb",
+      "--nodaemon",
+      "--base-dir=/tmp/fts-regression-three-way/1-baseline.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "1-baseline.report"
+  },
+  {
+    "label": "2-previous",
+    "binary": "/tmp/fts-performance/candidate/seekdb",
+    "sha256": "e217d7c412a5c50dacc9fb67c33ce86759eebacff158ba2a825159e0f0e6fafc",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/tmp/fts-performance/candidate/seekdb",
+      "--nodaemon",
+      "--base-dir=/tmp/fts-regression-three-way/2-previous.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "2-previous.report"
+  },
+  {
+    "label": "3-candidate",
+    "binary": "/tmp/fts-regression-binaries/fixed-seekdb",
+    "sha256": "59b947a8534c277f37db2a65ab5e1ed894e0d2b73d5afd836b59220220f87442",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/tmp/fts-regression-binaries/fixed-seekdb",
+      "--nodaemon",
+      "--base-dir=/tmp/fts-regression-three-way/3-candidate.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "3-candidate.report"
+  },
+  {
+    "label": "4-candidate",
+    "binary": "/tmp/fts-regression-binaries/fixed-seekdb",
+    "sha256": "59b947a8534c277f37db2a65ab5e1ed894e0d2b73d5afd836b59220220f87442",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/tmp/fts-regression-binaries/fixed-seekdb",
+      "--nodaemon",
+      "--base-dir=/tmp/fts-regression-three-way/4-candidate.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "4-candidate.report"
+  },
+  {
+    "label": "5-baseline",
+    "binary": "/tmp/fts-regression-binaries/official-5bce-seekdb",
+    "sha256": "d1ed8d37c14f39f88c4689558fbed2c5826426e78b0a5975453abc9cfac8ece3",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/tmp/fts-regression-binaries/official-5bce-seekdb",
+      "--nodaemon",
+      "--base-dir=/tmp/fts-regression-three-way/5-baseline.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "5-baseline.report"
+  },
+  {
+    "label": "6-previous",
+    "binary": "/tmp/fts-performance/candidate/seekdb",
+    "sha256": "e217d7c412a5c50dacc9fb67c33ce86759eebacff158ba2a825159e0f0e6fafc",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/tmp/fts-performance/candidate/seekdb",
+      "--nodaemon",
+      "--base-dir=/tmp/fts-regression-three-way/6-previous.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "6-previous.report"
+  },
+  {
+    "label": "7-previous",
+    "binary": "/tmp/fts-performance/candidate/seekdb",
+    "sha256": "e217d7c412a5c50dacc9fb67c33ce86759eebacff158ba2a825159e0f0e6fafc",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/tmp/fts-performance/candidate/seekdb",
+      "--nodaemon",
+      "--base-dir=/tmp/fts-regression-three-way/7-previous.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "7-previous.report"
+  },
+  {
+    "label": "8-candidate",
+    "binary": "/tmp/fts-regression-binaries/fixed-seekdb",
+    "sha256": "59b947a8534c277f37db2a65ab5e1ed894e0d2b73d5afd836b59220220f87442",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/tmp/fts-regression-binaries/fixed-seekdb",
+      "--nodaemon",
+      "--base-dir=/tmp/fts-regression-three-way/8-candidate.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "8-candidate.report"
+  },
+  {
+    "label": "9-baseline",
+    "binary": "/tmp/fts-regression-binaries/official-5bce-seekdb",
+    "sha256": "d1ed8d37c14f39f88c4689558fbed2c5826426e78b0a5975453abc9cfac8ece3",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/tmp/fts-regression-binaries/official-5bce-seekdb",
+      "--nodaemon",
+      "--base-dir=/tmp/fts-regression-three-way/9-baseline.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "9-baseline.report"
+  }
+]

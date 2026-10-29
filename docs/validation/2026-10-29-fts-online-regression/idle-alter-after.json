@@ -1,0 +1,9 @@
+{
+  "passed": true,
+  "idle_task_sql_before": 0,
+  "idle_task_sql_after": 0,
+  "idle_task_sql_executions": 0,
+  "result": "mock:idle-new",
+  "remaining_tasks": 0,
+  "activation": "ALTER"
+}

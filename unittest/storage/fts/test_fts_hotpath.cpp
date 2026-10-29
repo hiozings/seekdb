@@ -7,6 +7,8 @@
 #include <vector>
 #include "storage/fts/ik/ob_ik_char_util.h"
 #include "share/text_analysis/ob_text_analyzer.h"
+#include "storage/fts/ob_beng_ft_parser.h"
+#include "lib/allocator/ob_allocator.h"
 
 using namespace oceanbase::common;
 using namespace oceanbase::storage;
@@ -158,6 +160,176 @@ TEST(FtsHotpath, WhitespaceAllBytePairs)
     ASSERT_EQ(OB_ITER_END, ret);
     ASSERT_EQ(expected, actual) << pair;
   }
+}
+
+class CountingAllocator final : public ObWrapperAllocator
+{
+public:
+  explicit CountingAllocator(ObIAllocator &allocator) : ObWrapperAllocator(allocator) {}
+  void *alloc(int64_t size) override
+  { ++allocations; return allocations == fail_at ? nullptr : ObWrapperAllocator::alloc(size); }
+  void *alloc(int64_t size, const ObMemAttr &attr) override
+  { ++allocations; return allocations == fail_at ? nullptr : ObWrapperAllocator::alloc(size, attr); }
+  int64_t allocations = 0;
+  int64_t fail_at = -1;
+};
+
+TEST(FtsHotpath, BengAsciiStableWordsAndBoundedAllocations)
+{
+  ObArenaAllocator arena;
+  CountingAllocator allocator(arena);
+  std::string text;
+  for (int i = 0; i < 200; ++i) { text += "ALPHA beta 12345. "; }
+  ObFTParserParam param;
+  param.cs_ = ObCharset::get_charset(CS_TYPE_UTF8MB4_GENERAL_CI);
+  param.allocator_ = &allocator;
+  param.fulltext_ = text.data();
+  param.ft_length_ = text.size();
+  ObBEngFTParser parser(allocator);
+  ASSERT_EQ(OB_SUCCESS, parser.init(&param));
+  std::vector<std::pair<const char *, int64_t>> words;
+  const char *word;
+  int64_t len, chars, frequency;
+  int ret;
+  while ((ret = parser.get_next_token(word, len, chars, frequency)) == OB_SUCCESS) {
+    words.emplace_back(word, len);
+    ASSERT_EQ(1, frequency);
+    ASSERT_EQ(len, chars);
+  }
+  ASSERT_EQ(OB_ITER_END, ret);
+  ASSERT_EQ(600, words.size());
+  // Returned words must remain valid after iteration, parser reset and changes
+  // to the source document, until the caller's allocator is released.
+  parser.reset();
+  std::fill(text.begin(), text.end(), 'x');
+  const char *expected[] = {"alpha", "beta", "12345"};
+  for (size_t i = 0; i < words.size(); ++i) {
+    EXPECT_EQ(expected[i % 3], std::string(words[i].first, words[i].second));
+  }
+  EXPECT_LE(allocator.allocations, 4); // Document-sized ownership, not per-word copies.
+}
+
+TEST(FtsHotpath, BengAsciiAllocationFailureCanRetry)
+{
+  ObArenaAllocator arena;
+  CountingAllocator allocator(arena);
+  allocator.fail_at = 1;
+  ObFTParserParam param;
+  param.cs_ = ObCharset::get_charset(CS_TYPE_UTF8MB4_BIN);
+  param.allocator_ = &allocator;
+  param.fulltext_ = "ALPHA beta";
+  param.ft_length_ = 10;
+  ObBEngFTParser parser(allocator);
+  ASSERT_EQ(OB_ALLOCATE_MEMORY_FAILED, parser.init(&param));
+  allocator.fail_at = -1;
+  ASSERT_EQ(OB_SUCCESS, parser.init(&param));
+  const char *word = nullptr;
+  int64_t length = 0, characters = 0, frequency = 0;
+  ASSERT_EQ(OB_SUCCESS, parser.get_next_token(word, length, characters, frequency));
+  EXPECT_EQ("alpha", std::string(word, length));
+  EXPECT_EQ(1, frequency);
+}
+
+TEST(FtsHotpath, BengAsciiAndFallbackMatchLegacyAnalyzer)
+{
+  ObArenaAllocator arena;
+  ObTextAnalysisCtx ctx;
+  ctx.filter_stopword_ = false;
+  ctx.need_grouping_ = false;
+  for (auto collation : {CS_TYPE_UTF8MB4_BIN, CS_TYPE_UTF8MB4_GENERAL_CI}) {
+    ctx.cs_ = ObCharset::get_charset(collation);
+    for (unsigned pair = 0; pair < 16384; ++pair) {
+      const char bytes[] = {'A', static_cast<char>(pair >> 7), static_cast<char>(pair & 127), 'Z'};
+      const std::string input(bytes, sizeof(bytes));
+      {
+        ObEnglishTextAnalyzer reference;
+        ASSERT_EQ(OB_SUCCESS, reference.init(ctx, arena));
+        const auto expected = analyze(reference, input);
+        ObFTParserParam param;
+        param.cs_ = ctx.cs_;
+        param.allocator_ = &arena;
+        param.fulltext_ = input.data();
+        param.ft_length_ = input.size();
+        ObBEngFTParser parser(arena);
+        ASSERT_EQ(OB_SUCCESS, parser.init(&param));
+        std::vector<std::string> actual;
+        const char *word;
+        int64_t length, characters, frequency;
+        int ret;
+        while ((ret = parser.get_next_token(word, length, characters, frequency)) == OB_SUCCESS) {
+          actual.emplace_back(word, length);
+          ASSERT_EQ(1, frequency);
+          ASSERT_EQ(length, characters);
+        }
+        ASSERT_EQ(OB_ITER_END, ret);
+        ASSERT_EQ(expected, actual) << pair << ":" << collation;
+      }
+      arena.reuse();
+    }
+  }
+  for (const std::string &input : {std::string("élève 中文 İSTANBUL ASCII"),
+                                   std::string(65537, 'A'), std::string(65536, 'A'),
+                                   std::string(65535, 'A')}) {
+    ObEnglishTextAnalyzer reference;
+    ASSERT_EQ(OB_SUCCESS, reference.init(ctx, arena));
+    const auto expected = analyze(reference, input);
+    ObFTParserParam param;
+    param.cs_ = ctx.cs_;
+    param.allocator_ = &arena;
+    param.fulltext_ = input.data();
+    param.ft_length_ = input.size();
+    ObBEngFTParser parser(arena);
+    ASSERT_EQ(OB_SUCCESS, parser.init(&param));
+    std::vector<std::string> actual;
+    const char *word;
+    int64_t length, characters, frequency;
+    int ret;
+    while ((ret = parser.get_next_token(word, length, characters, frequency)) == OB_SUCCESS) {
+      actual.emplace_back(word, length);
+      ASSERT_EQ(1, frequency);
+    }
+    ASSERT_EQ(OB_ITER_END, ret);
+    ASSERT_EQ(expected, actual);
+  }
+}
+
+TEST(FtsHotpath, BengDocumentMicrobenchmark)
+{
+  if (std::getenv("FTS_MICROBENCH") == nullptr) { return; }
+  ObArenaAllocator arena;
+  const auto *cs = ObCharset::get_charset(CS_TYPE_UTF8MB4_GENERAL_CI);
+  // An equivalent charset descriptor exercises the retained generic analyzer
+  // without the pointer-selected fast path. No product behavior is mocked.
+  ObCharsetInfo generic_cs = *cs;
+  std::string text;
+  for (int i = 0; i < 30; ++i) { text += "ALPHA beta gamma Delta 12345 text normalization, punctuation! "; }
+  uint64_t sums[2] = {};
+  double elapsed[2] = {};
+  for (int variant = 0; variant < 2; ++variant) {
+    const auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < 10000; ++i) {
+      {
+        ObBEngFTParser parser(arena);
+        ObFTParserParam param;
+        param.cs_ = variant == 0 ? &generic_cs : cs;
+        param.allocator_ = &arena;
+        param.fulltext_ = text.data();
+        param.ft_length_ = text.size();
+        ASSERT_EQ(OB_SUCCESS, parser.init(&param));
+        const char *word;
+        int64_t length, characters, frequency;
+        int ret;
+        while ((ret = parser.get_next_token(word, length, characters, frequency)) == OB_SUCCESS) {
+          sums[variant] += length + frequency;
+        }
+        ASSERT_EQ(OB_ITER_END, ret);
+      }
+      arena.reuse();
+    }
+    elapsed[variant] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  }
+  EXPECT_EQ(sums[0], sums[1]);
+  std::printf("BENG_DOCUMENT_MICROBENCH generic_ms=%.3f bounded_ascii_ms=%.3f checksum=%lu\n", elapsed[0], elapsed[1], sums[0]);
 }
 
 TEST(FtsHotpath, Microbenchmark)

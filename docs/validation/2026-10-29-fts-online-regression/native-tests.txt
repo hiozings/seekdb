@@ -1,0 +1,28 @@
+[==========] Running 9 tests from 1 test case.
+[----------] Global test environment set-up.
+[----------] 9 tests from FtsHotpath
+[ RUN      ] FtsHotpath.ExhaustiveUtf8Classification
+[       OK ] FtsHotpath.ExhaustiveUtf8Classification (34 ms)
+[ RUN      ] FtsHotpath.Utf16CodeUnitsAndTruncatedUtf8
+[       OK ] FtsHotpath.Utf16CodeUnitsAndTruncatedUtf8 (0 ms)
+[ RUN      ] FtsHotpath.EnglishReuseAndNormalization
+[       OK ] FtsHotpath.EnglishReuseAndNormalization (0 ms)
+[ RUN      ] FtsHotpath.WhitespaceAllBytePairs
+[       OK ] FtsHotpath.WhitespaceAllBytePairs (4 ms)
+[ RUN      ] FtsHotpath.BengAsciiStableWordsAndBoundedAllocations
+[       OK ] FtsHotpath.BengAsciiStableWordsAndBoundedAllocations (0 ms)
+[ RUN      ] FtsHotpath.BengAsciiAllocationFailureCanRetry
+[       OK ] FtsHotpath.BengAsciiAllocationFailureCanRetry (0 ms)
+[ RUN      ] FtsHotpath.BengAsciiAndFallbackMatchLegacyAnalyzer
+[       OK ] FtsHotpath.BengAsciiAndFallbackMatchLegacyAnalyzer (10 ms)
+[ RUN      ] FtsHotpath.BengDocumentMicrobenchmark
+BENG_DOCUMENT_MICROBENCH generic_ms=112.900 bounded_ascii_ms=72.756 checksum=18000000
+[       OK ] FtsHotpath.BengDocumentMicrobenchmark (186 ms)
+[ RUN      ] FtsHotpath.Microbenchmark
+FTS_MICROBENCH classify_ms=695.016 english_ms=346.647 checksum=214000000
+[       OK ] FtsHotpath.Microbenchmark (1042 ms)
+[----------] 9 tests from FtsHotpath (1276 ms total)
+
+[----------] Global test environment tear-down
+[==========] 9 tests from 1 test case ran. (1276 ms total)
+[  PASSED  ] 9 tests.

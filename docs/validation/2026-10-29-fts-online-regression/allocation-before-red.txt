@@ -1,0 +1,17 @@
+Note: Google Test filter = FtsHotpath.BengAsciiStableWordsAndBoundedAllocations
+[==========] Running 1 test from 1 test case.
+[----------] Global test environment set-up.
+[----------] 1 test from FtsHotpath
+[ RUN      ] FtsHotpath.BengAsciiStableWordsAndBoundedAllocations
+unittest/storage/fts/test_fts_hotpath.cpp:207: Failure
+Expected: (allocator.allocations) <= (4), actual: 602 vs 4
+[  FAILED  ] FtsHotpath.BengAsciiStableWordsAndBoundedAllocations (1 ms)
+[----------] 1 test from FtsHotpath (1 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test case ran. (1 ms total)
+[  PASSED  ] 0 tests.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] FtsHotpath.BengAsciiStableWordsAndBoundedAllocations
+
+ 1 FAILED TEST
