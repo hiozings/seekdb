@@ -563,6 +563,46 @@ int ObCharset::strcmp(ObCollationType collation_type,
   return result;
 }
 
+namespace {
+inline bool is_ascii_alnum_string(const char *str, const int64_t len)
+{
+  bool is_alnum = true;
+  for (int64_t i = 0; is_alnum && i < len; ++i) {
+    const unsigned char c = static_cast<unsigned char>(str[i]);
+    is_alnum = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+  }
+  return is_alnum;
+}
+
+// General_ci orders ASCII alphanumerics case-insensitively by code point.  The
+// sort of fulltext word rows compares millions of short ASCII tokens, so avoid
+// the generic collation handler (and its per-character weight lookup) for this
+// common case.  Non-ASCII and non-alphanumeric strings keep the original path.
+inline int compare_ascii_alnum_ci(
+    const char *str1, const int64_t str1_len, const char *str2, const int64_t str2_len)
+{
+  const int64_t cmp_len = str1_len < str2_len ? str1_len : str2_len;
+  int result = 0;
+  for (int64_t i = 0; 0 == result && i < cmp_len; ++i) {
+    unsigned char c1 = static_cast<unsigned char>(str1[i]);
+    unsigned char c2 = static_cast<unsigned char>(str2[i]);
+    if (c1 >= 'A' && c1 <= 'Z') {
+      c1 += 'a' - 'A';
+    }
+    if (c2 >= 'A' && c2 <= 'Z') {
+      c2 += 'a' - 'A';
+    }
+    if (c1 != c2) {
+      result = c1 < c2 ? -1 : 1;
+    }
+  }
+  if (0 == result && str1_len != str2_len) {
+    result = str1_len < str2_len ? -1 : 1;
+  }
+  return result;
+}
+} // namespace
+
 int ObCharset::strcmpsp(ObCollationType collation_type,
                         const char *str1,
                         int64_t str1_len,
@@ -572,13 +612,24 @@ int ObCharset::strcmpsp(ObCollationType collation_type,
 {
   int result = 0;
   if (is_argument_valid(collation_type, str1, str1_len, str2, str2_len)) {
-    const ObCharsetInfo *cs = get_charset(collation_type);
-    result = cs->coll->strnncollsp(cs,
-                                reinterpret_cast<const unsigned char *>(str1),
-                                str1_len,
-                                reinterpret_cast<const unsigned char *>(str2),
-                                str2_len,
-                                cmp_endspace);
+    // Identical byte strings compare equal under every collation.  Duplicate
+    // sort keys (the same word occurring in many documents) are very common.
+    if (str1_len == str2_len && 0 == memcmp(str1, str2, static_cast<size_t>(str1_len))) {
+      result = 0;
+    } else if (!cmp_endspace
+               && CS_TYPE_UTF8MB4_GENERAL_CI == collation_type
+               && is_ascii_alnum_string(str1, str1_len)
+               && is_ascii_alnum_string(str2, str2_len)) {
+      result = compare_ascii_alnum_ci(str1, str1_len, str2, str2_len);
+    } else {
+      const ObCharsetInfo *cs = get_charset(collation_type);
+      result = cs->coll->strnncollsp(cs,
+                                  reinterpret_cast<const unsigned char *>(str1),
+                                  str1_len,
+                                  reinterpret_cast<const unsigned char *>(str2),
+                                  str2_len,
+                                  cmp_endspace);
+    }
   }
   return result;
 }
