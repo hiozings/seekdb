@@ -1,0 +1,17 @@
+[==========] Running 4 tests from 1 test case.
+[----------] Global test environment set-up.
+[----------] 4 tests from FtsHotpath
+[ RUN      ] FtsHotpath.ExhaustiveUtf8Classification
+[       OK ] FtsHotpath.ExhaustiveUtf8Classification (35 ms)
+[ RUN      ] FtsHotpath.Utf16CodeUnitsAndTruncatedUtf8
+[       OK ] FtsHotpath.Utf16CodeUnitsAndTruncatedUtf8 (0 ms)
+[ RUN      ] FtsHotpath.EnglishReuseAndNormalization
+[       OK ] FtsHotpath.EnglishReuseAndNormalization (0 ms)
+[ RUN      ] FtsHotpath.Microbenchmark
+FTS_MICROBENCH classify_ms=1118.708 english_ms=462.752 checksum=214000000
+[       OK ] FtsHotpath.Microbenchmark (1581 ms)
+[----------] 4 tests from FtsHotpath (1617 ms total)
+
+[----------] Global test environment tear-down
+[==========] 4 tests from 1 test case ran. (1617 ms total)
+[  PASSED  ] 4 tests.

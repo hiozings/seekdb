@@ -1,0 +1,122 @@
+[
+  {
+    "label": "1-baseline",
+    "binary": "/tmp/fts-performance/baseline/seekdb",
+    "sha256": "d927ff57de816853fbfac5e0e12c5ea70e505748e264820821a9f6110cc903e0",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/tmp/fts-performance/baseline/seekdb",
+      "--nodaemon",
+      "--base-dir=/tmp/fts-performance/comparison-1/instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "1-baseline.report"
+  },
+  {
+    "label": "2-candidate",
+    "binary": "/tmp/fts-performance/candidate/seekdb",
+    "sha256": "e217d7c412a5c50dacc9fb67c33ce86759eebacff158ba2a825159e0f0e6fafc",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/tmp/fts-performance/candidate/seekdb",
+      "--nodaemon",
+      "--base-dir=/tmp/fts-performance/comparison-1/instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "2-candidate.report"
+  },
+  {
+    "label": "3-candidate",
+    "binary": "/tmp/fts-performance/candidate/seekdb",
+    "sha256": "e217d7c412a5c50dacc9fb67c33ce86759eebacff158ba2a825159e0f0e6fafc",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/tmp/fts-performance/candidate/seekdb",
+      "--nodaemon",
+      "--base-dir=/tmp/fts-performance/comparison-1/instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "3-candidate.report"
+  },
+  {
+    "label": "4-baseline",
+    "binary": "/tmp/fts-performance/baseline/seekdb",
+    "sha256": "d927ff57de816853fbfac5e0e12c5ea70e505748e264820821a9f6110cc903e0",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/tmp/fts-performance/baseline/seekdb",
+      "--nodaemon",
+      "--base-dir=/tmp/fts-performance/comparison-1/instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "4-baseline.report"
+  },
+  {
+    "label": "5-baseline",
+    "binary": "/tmp/fts-performance/baseline/seekdb",
+    "sha256": "d927ff57de816853fbfac5e0e12c5ea70e505748e264820821a9f6110cc903e0",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/tmp/fts-performance/baseline/seekdb",
+      "--nodaemon",
+      "--base-dir=/tmp/fts-performance/comparison-1/instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "5-baseline.report"
+  },
+  {
+    "label": "6-candidate",
+    "binary": "/tmp/fts-performance/candidate/seekdb",
+    "sha256": "e217d7c412a5c50dacc9fb67c33ce86759eebacff158ba2a825159e0f0e6fafc",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/tmp/fts-performance/candidate/seekdb",
+      "--nodaemon",
+      "--base-dir=/tmp/fts-performance/comparison-1/instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "6-candidate.report"
+  }
+]

@@ -44,3 +44,5 @@ target_compile_options(test_ai_column_worker_state PRIVATE -UNDEBUG)
 add_dependencies(competition_unit_tests test_ai_column_worker_state)
 add_test(NAME test_ai_column_worker_state COMMAND test_ai_column_worker_state)
 set_tests_properties(test_ai_column_worker_state PROPERTIES LABELS competition)
+
+seekdb_competition_gtest(test_fts_hotpath storage/fts/test_fts_hotpath.cpp)

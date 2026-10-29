@@ -1,0 +1,46 @@
+{
+  "base_commit": "cb237334a80b14146377c17bfdffb0ea7259b049",
+  "branch": "feature/fts-performance",
+  "production_build": "PASS (CMake release, clang17, same existing build configuration)",
+  "native_ctest": {
+    "passed": 9,
+    "failed": 0
+  },
+  "fts_native_cases": 5,
+  "report_summary_unit_tests": 2,
+  "sql_differential": {
+    "cases": 193,
+    "successes": 189,
+    "identical_on_same_index": true,
+    "unsupported_utf16_cases": 4,
+    "independent_index_token_and_full_id_rank_checks": 178
+  },
+  "performance": {
+    "complete_runs": 12,
+    "per_version": 6,
+    "official_config_validated": true,
+    "server_cpus": "8,10",
+    "client_cpu": "12",
+    "memory_limit": "2G",
+    "cpu_count": 2,
+    "hardware": "Intel Core i9-14900HX, 16 GiB host RAM",
+    "parameters": {
+      "ROWS": 20000,
+      "BATCH": 500,
+      "ROUNDS": 3000,
+      "QUERY_ROUNDS": 200,
+      "SAMPLES": 3,
+      "WARMUP": 30,
+      "SKIP_LOAD": 0
+    }
+  },
+  "profiling": "perf task-clock denied by environment; no host policy changes. Native hotpath microbench and source call-chain evidence used.",
+  "review": "Independent gpt-6-astra review: no production Major/Blocker; malformed-byte fixture bounds finding reproduced with assertion then fixed and verified.",
+  "scope": "Three production files, no dictionary/ranking/storage format changes, no SQL result cache.",
+  "cleanup": "Owned benchmark processes stopped. No commit, merge, or push performed.",
+  "limitations": [
+    "End-to-end improvement is noisy: batch1 +4.325%, batch2 -0.332%; combined +2.170% is observational, not a stable 50% speedup.",
+    "Official fixed CI score on this host is reference only; no competition platform/hidden performance evaluation performed.",
+    "Repeated index builds can alter estimated average document length and relevance values; same-index full score equivalence was checked separately."
+  ]
+}

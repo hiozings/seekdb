@@ -1,0 +1,62 @@
+[
+  {
+    "report": "batch1-1-baseline.report",
+    "reference_score": 100.0,
+    "config_mismatches": []
+  },
+  {
+    "report": "batch1-2-candidate.report",
+    "reference_score": 100.0,
+    "config_mismatches": []
+  },
+  {
+    "report": "batch1-3-candidate.report",
+    "reference_score": 100.0,
+    "config_mismatches": []
+  },
+  {
+    "report": "batch1-4-baseline.report",
+    "reference_score": 100.0,
+    "config_mismatches": []
+  },
+  {
+    "report": "batch1-5-baseline.report",
+    "reference_score": 100.0,
+    "config_mismatches": []
+  },
+  {
+    "report": "batch1-6-candidate.report",
+    "reference_score": 100.0,
+    "config_mismatches": []
+  },
+  {
+    "report": "batch2-1-baseline.report",
+    "reference_score": 100.0,
+    "config_mismatches": []
+  },
+  {
+    "report": "batch2-2-candidate.report",
+    "reference_score": 100.0,
+    "config_mismatches": []
+  },
+  {
+    "report": "batch2-3-candidate.report",
+    "reference_score": 100.0,
+    "config_mismatches": []
+  },
+  {
+    "report": "batch2-4-baseline.report",
+    "reference_score": 100.0,
+    "config_mismatches": []
+  },
+  {
+    "report": "batch2-5-baseline.report",
+    "reference_score": 100.0,
+    "config_mismatches": []
+  },
+  {
+    "report": "batch2-6-candidate.report",
+    "reference_score": 100.0,
+    "config_mismatches": []
+  }
+]
