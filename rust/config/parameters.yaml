@@ -1597,6 +1597,13 @@
   edit_level: DYNAMIC_EFFECTIVE
   description: "control if enable encode sort"
 
+- name: _enable_fts_posting_index
+  type: BOOL
+  default: "False"
+  section: OBSERVER
+  edit_level: DYNAMIC_EFFECTIVE
+  description: "control if create/build/query the FTS word-level posting auxiliary table"
+
 - name: _px_object_sampling
   type: INT
   default: "200"
