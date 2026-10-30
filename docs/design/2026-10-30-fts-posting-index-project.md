@@ -333,3 +333,21 @@ CREATE TABLE IF NOT EXISTS `db`.`name` (
   路径（或被 drop 的 user index 走的是另一条路径）。drop 生命周期尚未完成。
 
 结论：create 已可用；drop 需要继续定位实际执行 user FTS index drop 的入口。
+
+## 12. M1.3a create/drop 验证通过（2026-10-30）
+
+修正：posting 表名改用 **FTS index aux table id**
+（`domain_index_aux_table_id_`），而不是 user index table id；这样
+`ObDropFTSIndexTask` 删除 `__idx_..._fti_*` 时能匹配到同名 posting 表。
+
+实测（flag=true，20000 行新建）：
+
+- 创建 3 张 posting 表，名字分别带 `__idx_..._fti_*` 的 aux table id；
+- `SHOW CREATE TABLE` 确认：
+  - `word varchar(1024)`、`doc_id varchar(64) utf8mb4_bin`、`word_count`、`doc_length`；
+  - `PRIMARY KEY (word, doc_id)`；
+- `DROP INDEX fti_all_ik` 后 posting 数量 3 → 2；
+- 再 drop 其余两个 FTS 索引后 posting 数量 → 0；
+- flag=false 新建：posting 数量 0，查询命中仍为 8001/11000/7332/20。
+
+剩余：build 失败时的 clean_on_failed 清理尚未接入；正常 create/drop 已通过。

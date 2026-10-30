@@ -555,7 +555,7 @@ int ObFtsIndexBuildTask::create_posting_aux_table()
   } else if (OB_ISNULL(GCTX.sql_proxy_)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(build_posting_table_name(create_index_arg_.database_name_,
-                                              object_id_, index_table_id_, name))) {
+                                              object_id_, domain_index_aux_table_id_, name))) {
   } else if (OB_FAIL(sql.assign_fmt(
                  "CREATE TABLE IF NOT EXISTS %s ("
                  "word varchar(1024) collate utf8mb4_general_ci not null, "
@@ -578,7 +578,7 @@ int ObFtsIndexBuildTask::drop_posting_aux_table()
   } else if (OB_ISNULL(GCTX.sql_proxy_)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(build_posting_table_name(create_index_arg_.database_name_,
-                                              object_id_, index_table_id_, name))) {
+                                              object_id_, domain_index_aux_table_id_, name))) {
   } else if (OB_FAIL(sql.assign_fmt("DROP TABLE IF EXISTS %s", name.ptr()))) {
   } else if (OB_FAIL(GCTX.sql_proxy_->write(sql.ptr(), affected_rows))) {
   }
