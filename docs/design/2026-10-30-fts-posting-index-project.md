@@ -219,3 +219,50 @@ CREATE TABLE __fts_posting_proto (
 结论：表层面的 schema/rowkey 可行。但把它作为 FTS aux 表自动创建仍不能复用现有
 index-arg/generated-column 路径，因为数据表没有逐词列；需要专用的内部表创建
 路径/lifecycle（下一步）。
+
+## 9. M1.3 create/drop 生命周期设计（2026-10-30）
+
+posting aux 表不能复用 `append_fts_index_arg` 的 generated-column/index-arg
+路径，因为数据表没有逐词列。M1.3 采用**专用内部表创建路径**：
+
+### 9.1 Feature flag
+
+- 新增 hidden config `_enable_fts_posting_index`，默认 `false`；
+- 所有 posting 表的创建、构建、查询、drop 都由该 flag 门控；
+- flag 关闭时，现有 FTS 索引路径零改动。
+
+### 9.2 创建
+
+在 `ObFtsIndexBuildTask` 创建完现有 aux 表后：
+
+1. 用 `build_fts_posting_schema()` 构造显式 `ObTableSchema`：
+   - `word VARCHAR`（parser token，collation 与源列一致）
+   - `doc_id VARCHAR BINARY`
+   - `word_count INT`、`doc_length INT`
+   - rowkey `(word, doc_id)`、index type `INDEX_TYPE_FTS_POSTING_LOCAL`
+2. 通过 DDL service 创建内部表，表名 `__idx_<data>_<index>_fts_posting`；
+3. 记录 table_id 到 FTS DDL task，用于失败清理和 drop；
+4. 建表失败时回滚/删除，不留下孤立表。
+
+### 9.3 Drop / rebuild
+
+- FTS index drop task 在 flag 打开时先/后 drop posting 表；
+- rebuild 先 drop 旧 posting 表再创建新表，避免残留；
+- DDL task 重试要幂等：存在则复用或先 drop。
+
+### 9.4 验收（M1.3）
+
+- flag=false：现有 FTS 索引创建/查询/drop 行为完全不变；
+- flag=true：创建一个空的 posting aux 表，`rowkey/列/collation` 与设计一致；
+- `CREATE/DROP/重建` 后 `__all_table` 无残留 posting 表；
+- 不影响现有 FTS 索引、查询命中数和 `test_fts_hotpath`；
+- 官方评分/基准/测试文件零改动。
+
+### 9.5 风险
+
+- DDL scheduler 的生命周期/事务/重试比普通 SQL 建表复杂；
+- 内部表需要纳入 FTS task 的失败清理路径；
+- 专用建表路径需要新增 DDL service 调用，不能只靠 index-arg。
+
+该设计确认了实现边界：M1.3 需要改 `ObFtsIndexBuildTask`/drop task 与 DDL
+service 的建表入口，而不是此前的 SQL/DAS 位置管线。
