@@ -312,3 +312,24 @@ CREATE TABLE IF NOT EXISTS `db`.`name` (
 - 在 DDL task 状态机内执行 inner SQL 建表，需要处理 task 重试/RS 切换；
 - posting 表不在 schema 的 aux 列表中，需要显式 drop；
 - 首期只支持 local FTS index；feature flag 默认关闭。
+
+## 11. M1.3a 实施结果（2026-10-30）
+
+已实现（flag 默认关闭）：
+
+- `ObFtsIndexBuildTask::create_posting_aux_table()`：在
+  `GENERATE_DOC_AUX_SCHEMA` 成功后按
+  `__fts_posting_<data_table_id>_<index_table_id>` 建空表；
+- `drop_posting_aux_table()` 及 `ObDropFTSIndexTask` 中的 drop 逻辑。
+
+实测：
+
+- flag=true、新建 20000 行 benchmark：生成 3 张 posting 表
+  `__fts_posting_<data>_<index>`，查询命中数保持
+  `8001/11000/7332/20`；
+- flag=false、新建：posting 表数量为 0，命中数不变；
+- 正常 `ALTER TABLE ... DROP INDEX fti_all_ik` 后 posting 表仍然存在，
+  说明 drop 没有走到当前 `ObDropFTSIndexTask::create_drop_index_task`
+  路径（或被 drop 的 user index 走的是另一条路径）。drop 生命周期尚未完成。
+
+结论：create 已可用；drop 需要继续定位实际执行 user FTS index drop 的入口。

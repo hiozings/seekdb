@@ -16,6 +16,7 @@
 
 #define USING_LOG_PREFIX STORAGE_FTS
 
+#include "config_bridge.h"
 #include "rootserver/ddl_task/ob_drop_fts_index_task.h"
 #include "share/rc/ob_server_runtime.h"
 #include "rootserver/ob_local_ddl_serial_call.h"
@@ -518,6 +519,19 @@ int ObDropFTSIndexTask::create_drop_index_task(
     } else if (OB_FAIL(rootserver::local_ddl_serial_call([&]{ return ::oceanbase::share::server_service<::oceanbase::rootserver::ObLocalManagementService>()->drop_index(arg, res); }))) {
     } else {
       task_id = res.task_id_;
+    }
+    if (OB_SUCC(ret) && config::_enable_fts_posting_index()
+        && index_schema->is_fts_index_aux()) {
+      common::ObSqlString posting_sql;
+      int64_t affected_rows = 0;
+      if (OB_FAIL(posting_sql.assign_fmt(
+              "DROP TABLE IF EXISTS `%.*s`.`__fts_posting_%lu_%lu`",
+              database_schema->get_database_name_str().length(),
+              database_schema->get_database_name_str().ptr(),
+              static_cast<uint64_t>(data_table_schema->get_table_id()),
+              static_cast<uint64_t>(index_tid)))) {
+      } else if (OB_FAIL(GCTX.sql_proxy_->write(posting_sql.ptr(), affected_rows))) {
+      }
     }
     LOG_INFO("drop index", K(ret), K(index_tid), K(index_name), K(task_id),
         "data table name", data_table_schema->get_table_name_str(),

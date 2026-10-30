@@ -131,6 +131,8 @@ private:
       int64_t &task_id);
   int prepare_rowkey_doc_table();
   int prepare_aux_index_tables();
+  int create_posting_aux_table();
+  int drop_posting_aux_table();
   int construct_create_index_arg(
       const ObIndexType index_type,
       obcall::ObCreateIndexArg &arg);

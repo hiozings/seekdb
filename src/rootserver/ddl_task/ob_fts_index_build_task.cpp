@@ -246,6 +246,7 @@ int ObFtsIndexBuildTask::process()
     }
     case ObDDLTaskStatus::GENERATE_DOC_AUX_SCHEMA: {
       if (OB_FAIL(prepare_aux_index_tables())) {
+      } else if (OB_FAIL(create_posting_aux_table())) {
       }
       break;
     }
@@ -530,6 +531,58 @@ int ObFtsIndexBuildTask::prepare_rowkey_doc_table()
 
     ret = OB_SUCCESS;
   }
+  return ret;
+}
+
+namespace {
+int build_posting_table_name(const common::ObString &db_name,
+                             const uint64_t data_table_id,
+                             const uint64_t index_table_id,
+                             common::ObSqlString &sql)
+{
+  return sql.assign_fmt("`%.*s`.`__fts_posting_%lu_%lu`",
+                        db_name.length(), db_name.ptr(), data_table_id, index_table_id);
+}
+} // namespace
+
+int ObFtsIndexBuildTask::create_posting_aux_table()
+{
+  int ret = OB_SUCCESS;
+  common::ObSqlString name;
+  common::ObSqlString sql;
+  int64_t affected_rows = 0;
+  if (!config::_enable_fts_posting_index()) {
+  } else if (OB_ISNULL(GCTX.sql_proxy_)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(build_posting_table_name(create_index_arg_.database_name_,
+                                              object_id_, index_table_id_, name))) {
+  } else if (OB_FAIL(sql.assign_fmt(
+                 "CREATE TABLE IF NOT EXISTS %s ("
+                 "word varchar(1024) collate utf8mb4_general_ci not null, "
+                 "doc_id varchar(64) binary not null, "
+                 "word_count int not null, doc_length int not null, "
+                 "primary key(word, doc_id))", name.ptr()))) {
+  } else if (OB_FAIL(GCTX.sql_proxy_->write(sql.ptr(), affected_rows))) {
+  }
+  LOG_INFO("create posting aux table", K(ret), K(sql));
+  return ret;
+}
+
+int ObFtsIndexBuildTask::drop_posting_aux_table()
+{
+  int ret = OB_SUCCESS;
+  common::ObSqlString name;
+  common::ObSqlString sql;
+  int64_t affected_rows = 0;
+  if (!config::_enable_fts_posting_index()) {
+  } else if (OB_ISNULL(GCTX.sql_proxy_)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(build_posting_table_name(create_index_arg_.database_name_,
+                                              object_id_, index_table_id_, name))) {
+  } else if (OB_FAIL(sql.assign_fmt("DROP TABLE IF EXISTS %s", name.ptr()))) {
+  } else if (OB_FAIL(GCTX.sql_proxy_->write(sql.ptr(), affected_rows))) {
+  }
+  LOG_INFO("drop posting aux table", K(ret), K(sql));
   return ret;
 }
 
