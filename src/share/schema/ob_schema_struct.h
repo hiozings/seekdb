@@ -351,12 +351,13 @@ enum ObIndexType
   // hybrid vec hnsw
   INDEX_TYPE_HYBRID_INDEX_LOG_LOCAL = 41,
   INDEX_TYPE_HYBRID_INDEX_EMBEDDED_LOCAL = 42,
+  INDEX_TYPE_FTS_POSTING_LOCAL = 43,
 
   /*
   * Attention!!! when add new index type,
   * need update func ObSimpleTableSchemaV2::should_not_validate_data_index_ckm()
   */
-  INDEX_TYPE_MAX = 43,
+  INDEX_TYPE_MAX = 44,
 };
 
 // using type for index
@@ -889,6 +890,11 @@ inline bool is_fts_doc_word_aux(const ObIndexType index_type)
   return INDEX_TYPE_FTS_DOC_WORD_LOCAL == index_type
       || INDEX_TYPE_FTS_DOC_WORD_GLOBAL == index_type
       || INDEX_TYPE_FTS_DOC_WORD_GLOBAL_LOCAL_STORAGE == index_type;
+}
+
+inline bool is_fts_posting_aux(const ObIndexType index_type)
+{
+  return INDEX_TYPE_FTS_POSTING_LOCAL == index_type;
 }
 
 inline bool is_multivalue_index_aux(const ObIndexType index_type)
