@@ -56,3 +56,29 @@ WORD_SEGMENT_IDX = is_fts_index_aux ? 0 : 1;
 ## 结论
 
 阶段 1 已落地并通过命中/单测验证；阶段 2 是真正的结构性改动，涉及写路径、DDL 键序和多值索引。早先的 doc_id 优先实验在未修读路径时构建无收益且查询为 0，因此阶段 2 不能只做键序交换，必须同时做 word 级 posting 构建才可能达到 20%～30% 的构建目标。
+
+## 位置来源契约与阶段 2b 失败记录（2026-10-30）
+
+尝试把 DDL 行位置从 `ddl_table_schema` 的列 flag 计算后写入 `ObTableScanSpec`，
+再传给 `ObFTIndexRowCache`。新建索引时失败：
+
+```text
+ERROR 1062 (23000): Duplicated primary key
+```
+
+原因：辅助表 schema 的列顺序不等于 DDL 插入行的逻辑布局。逻辑布局由
+`FTS_INDEX_EXPR_TYPE` / `FTS_DOC_WORD_EXPR_TYPE` 定义：
+
+- `FTS_INDEX_TYPE`：`[WORD_SEGMENT, DOC_ID, WORD_COUNT, DOC_LENGTH]`
+- `FTS_DOC_WORD`：`[DOC_ID, WORD_SEGMENT, WORD_COUNT, DOC_LENGTH]`
+
+DDL row cache 按 schema 列位置写行、DML 写路径按另一套位置写行，导致主键重复。
+
+结论：位置必须由**单一 canonical 映射**决定，不能一处看 schema、一处看 bool。
+后续改键序或 word 级 posting 时，必须**同一个提交**内同时修改：
+
+1. `ObFtsIndexBuilderUtil::adjust_fts_args` 的列顺序；
+2. `FTS_INDEX_EXPR_TYPE` / `FTS_DOC_WORD_EXPR_TYPE` 的 canonical 顺序；
+3. DDL row cache、DML 写路径、读路径使用的同一套位置。
+
+该实验的 spec/CG/op 改动已回退，分支保持在 `d5ae29ca4`。
