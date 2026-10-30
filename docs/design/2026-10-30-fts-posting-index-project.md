@@ -266,3 +266,49 @@ posting aux 表不能复用 `append_fts_index_arg` 的 generated-column/index-ar
 
 该设计确认了实现边界：M1.3 需要改 `ObFtsIndexBuildTask`/drop task 与 DDL
 service 的建表入口，而不是此前的 SQL/DAS 位置管线。
+
+## 10. 更小的 DDL 集成任务（M1.3a）
+
+目标：只做“创建/删除空 posting 表”的最小闭环，不写数据、不接查询。
+
+### 10.1 挂载点
+
+- 创建：`ObFtsIndexBuildTask::prepare_aux_index_tables()` 末尾（现有 aux schema
+  创建成功、状态切换前）；
+- 失败清理：`ObFtsIndexBuildTask::clean_on_failed()`；
+- 索引 drop：`ObDropFtsIndexTask` 的 process；
+- 全部由 `config::_enable_fts_posting_index()` 门控，默认 False。
+
+### 10.2 表名与 SQL
+
+- 表名：`__fts_posting_<data_table_id>_<index_name>`，放在数据表所在 database；
+- 建表 SQL（与 M1.2 验证一致）：
+
+```sql
+CREATE TABLE IF NOT EXISTS `db`.`name` (
+  word VARCHAR(1024) COLLATE utf8mb4_general_ci NOT NULL,
+  doc_id VARCHAR(64) BINARY NOT NULL,
+  word_count INT NOT NULL,
+  doc_length INT NOT NULL,
+  PRIMARY KEY (word, doc_id)
+);
+```
+
+- 执行：`GCTX.sql_proxy_->write(sql.ptr(), affected_rows)`；
+- 删除：`DROP TABLE IF EXISTS`；
+- 重试/重建：`IF NOT EXISTS` / 先 drop 再 create。
+
+### 10.3 验收
+
+- flag=false：现有 FTS DDL/查询完全不变；
+- flag=true：FTS 索引创建后存在一张空 posting 表，rowkey/列/collation 正确；
+- 索引 drop 后 posting 表被删除，无残留；
+- 失败清理删除 posting 表；
+- 旧 FTS 索引命中数与 `test_fts_hotpath` 不变；
+- 官方评分/基准/测试文件零改动。
+
+### 10.4 风险
+
+- 在 DDL task 状态机内执行 inner SQL 建表，需要处理 task 重试/RS 切换；
+- posting 表不在 schema 的 aux 列表中，需要显式 drop；
+- 首期只支持 local FTS index；feature flag 默认关闭。
