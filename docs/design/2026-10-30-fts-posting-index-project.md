@@ -192,3 +192,30 @@ M0 挂载点走查确认：
 - 测试：`unittest/storage/fts/` 下自建工具、`test_fts_hotpath`。
 
 M0 验收：posting 行数/词频由同一 parser 生成，统计与脚本一致；未改官方文件。
+
+## 8. M1.2 schema 可行性检查（2026-10-30）
+
+用 SQL 在真实 seekdb 实例上创建原型表：
+
+```sql
+CREATE TABLE __fts_posting_proto (
+  word VARCHAR(1024) COLLATE utf8mb4_general_ci NOT NULL,
+  doc_id VARCHAR(64) BINARY NOT NULL,
+  word_count INT NOT NULL,
+  doc_length INT NOT NULL,
+  PRIMARY KEY (word, doc_id)
+);
+```
+
+结果：
+
+- 建表成功，`SHOW CREATE TABLE` 显示 `PRIMARY KEY (word, doc_id)`；
+- `word` 为 `varchar(1024)`（general_ci），`doc_id` 为 `varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin`；
+- 插入 3 行成功，`SELECT COUNT(*) = 3`；
+- 测试后已 DROP，不残留。
+
+脚本：`unittest/storage/fts/posting_schema_prototype.py`。
+
+结论：表层面的 schema/rowkey 可行。但把它作为 FTS aux 表自动创建仍不能复用现有
+index-arg/generated-column 路径，因为数据表没有逐词列；需要专用的内部表创建
+路径/lifecycle（下一步）。
