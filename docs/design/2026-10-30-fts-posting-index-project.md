@@ -359,3 +359,55 @@ CREATE TABLE IF NOT EXISTS `db`.`name` (
 - `ObFtsIndexBuildTask::process()` 在 `task_status_ == FAIL` 且 flag 打开时
   调用 `drop_posting_aux_table()`，失败只记录 WARN，不覆盖原错误；
 - 编译通过；失败路径的运行期测试尚未覆盖（需要构造 build 失败注入）。
+
+## 14. M2 posting 行写入原型（2026-10-30）
+
+用脚本 `unittest/storage/fts/posting_populate.py` 从 20000 行 docs 读取
+`TOKENIZE(title + content, 'ik')`，向 M1.3 创建的 posting 表
+`__fts_posting_521525_521530` 写入 `(word, doc_id, word_count, doc_length)`。
+
+实测：
+
+- docs：20000；
+- total_tokens：813664；
+- posting_rows：813664；
+- 表内 `COUNT(*)`：813664，`SUM(word_count)`：813664；
+- 高频词：`文档`/`row` 13333、`是` 13332，与 M0 原型一致。
+
+说明：这是**外部写入原型**，验证 posting 行内容与 schema；正式 M2 仍需把
+写入放进 FTS build 的 DML/插入计划，而不是脚本。
+
+## 15. M3 posting 表查询原型（2026-10-30）
+
+对已填充的 `__fts_posting_521525_521530` 用脚本
+`unittest/storage/fts/posting_query.py` 按 token 取 doc_id 集合并做**并集**，
+复现官方 MATCH 命中数：
+
+| 查询 | posting 各 token 计数 | 并集 | 官方命中 |
+|---|---|---:|---:|
+| 全文索引 分词器 | 8001 / 4668 | **8001** | 8001 |
+| OceanBase 稳定 database | 3999 / 3333 / 5333 | **7332** | 7332 |
+| 倒排索引 tokenizer（LIMIT 20） | 4666 / 8000 / 5333 | 11333，取前 20 | 20 |
+
+说明：官方 FTS 的命中语义是 token 并集（不是交集）；posting 表可以复现
+CN / mixed / LIMIT 查询的命中数。BENG 查询尚未填充对应 posting 表，未验证；
+正式 M3 仍需接入引擎的 MATCH/扫描路径。
+
+## 16. M4 成本分解（2026-10-30）
+
+| 测量 | 耗时 |
+|---|---:|
+| 正常 docs 构建（flag=false） | 9.376s |
+| docs 预排序后构建（消除整段 sort） | 6.289s |
+| 外部脚本 tokenize + 写 813,664 posting 行 | 12.185s |
+| 引擎内复制 813,664 posting 行（无 tokenize） | **1.872s** |
+
+解释：
+
+- 整段 `word_segment` 排序约 **3.1s（33%）**；
+- 813k posting 行的引擎内写入只要 **1.9s**，远低于排序成本；
+- 外部 ETL 的 12.2s 主要来自客户端 tokenize/逐批 SQL，不代表引擎内写入。
+
+因此“替换式 DML”（共享 tokenize、直接写 posting、去掉整段排序）在成本上**有可能**
+达到 20%～30%；“构建后额外再写一张 posting 表”则不可能（12.2s > 9.4s）。
+下一步需要真正的替换式 DML 原型，而不是外部 ETL。

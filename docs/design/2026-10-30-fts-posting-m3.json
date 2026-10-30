@@ -1,0 +1,51 @@
+[
+  {
+    "query": "全文索引 分词器",
+    "tokens": [
+      "分词器",
+      "全文索引"
+    ],
+    "posting_counts": [
+      8001,
+      4668
+    ],
+    "union_count": 8001,
+    "limit": null,
+    "reported": 8001,
+    "expected": 8001
+  },
+  {
+    "query": "OceanBase 稳定 database",
+    "tokens": [
+      "oceanbase",
+      "稳定",
+      "database"
+    ],
+    "posting_counts": [
+      3999,
+      3333,
+      5333
+    ],
+    "union_count": 7332,
+    "limit": null,
+    "reported": 7332,
+    "expected": 7332
+  },
+  {
+    "query": "倒排索引 tokenizer",
+    "tokens": [
+      "倒排",
+      "索引",
+      "tokenizer"
+    ],
+    "posting_counts": [
+      4666,
+      8000,
+      5333
+    ],
+    "union_count": 11333,
+    "limit": 20,
+    "reported": 20,
+    "expected": 20
+  }
+]
