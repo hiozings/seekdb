@@ -23,6 +23,7 @@
 #include "data_plane/blocksstable/ob_datum_row.h"
 #include "sql/engine/ob_physical_plan.h"
 #include "sql/das/ob_das_attach_define.h"
+#include "sql/das/ob_das_domain_utils.h"
 #include "sql/das/ob_das_vec_define.h"
 #include "share/geo/ob_geo_utils.h"
 #include "share/ob_ddl_checksum.h"
@@ -1437,8 +1438,14 @@ int ObTableScanOp::inner_open()
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(ObDASUtils::check_nested_sql_mutating(MY_SPEC.ref_table_id_, ctx_, true))) {
   } else if (OB_FAIL(init_table_scan_rtdef())) {
-  } else if (MY_SPEC.is_fts_ddl_ && OB_FAIL(fts_index_.init(MY_SPEC.is_fts_index_aux_, MY_SPEC.parser_name_,
-          MY_SPEC.parser_properties_))) {
+  } else if (MY_SPEC.is_fts_ddl_) {
+    // The table scan is the data table; the auxiliary row layout still comes
+    // from is_fts_index_aux until the DDL plan carries explicit positions.
+    const int64_t word_idx = MY_SPEC.is_fts_index_aux_ ? 0 : 1;
+    const int64_t doc_id_idx = MY_SPEC.is_fts_index_aux_ ? 1 : 0;
+    if (OB_FAIL(fts_index_.init(MY_SPEC.is_fts_index_aux_, word_idx, doc_id_idx,
+                               MY_SPEC.parser_name_, MY_SPEC.parser_properties_))) {
+    }
   } else {
     if (MY_SPEC.report_col_checksum_) {
       if (PHY_TABLE_SCAN == MY_SPEC.get_type()) {

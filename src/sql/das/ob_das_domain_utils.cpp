@@ -41,7 +41,7 @@ namespace {
 // (which are serialized with the plan) instead of assuming the historical
 // auxiliary key order.  The doc-id column is identified by the typed doc-id
 // column id; the word-segment column is the remaining string column.
-int get_fts_word_doc_idx(const data_plane::ObDmlTableView &view,
+int get_fts_word_doc_idx_impl(const data_plane::ObDmlTableView &view,
                          int64_t &word_idx,
                          int64_t &doc_id_idx)
 {
@@ -87,6 +87,40 @@ int get_fts_word_doc_idx(const data_plane::ObDmlTableView &view,
 }
 } // namespace
 
+int ObDASDomainUtils::get_fts_word_doc_idx(const data_plane::ObDmlTableView &view,
+                                           int64_t &word_idx,
+                                           int64_t &doc_id_idx)
+{
+  return get_fts_word_doc_idx_impl(view, word_idx, doc_id_idx);
+}
+
+int ObDASDomainUtils::get_fts_word_doc_idx(const common::ObIArray<share::schema::ObColDesc> &cols,
+                                           int64_t &word_idx,
+                                           int64_t &doc_id_idx)
+{
+  int ret = OB_SUCCESS;
+  word_idx = -1;
+  doc_id_idx = -1;
+  for (int64_t i = 0; OB_SUCC(ret) && i < cols.count(); ++i) {
+    const common::ObObjMeta &meta = cols.at(i).col_type_;
+    if (ob_is_string_type(meta.get_type()) && CS_TYPE_BINARY == meta.get_collation_type()) {
+      doc_id_idx = i;
+      break;
+    }
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < cols.count(); ++i) {
+    const common::ObObjMeta &meta = cols.at(i).col_type_;
+    if (i != doc_id_idx && ob_is_string_type(meta.get_type())) {
+      word_idx = i;
+      break;
+    }
+  }
+  if (OB_SUCC(ret) && (-1 == doc_id_idx || -1 == word_idx)) {
+    ret = OB_ERR_UNEXPECTED;
+  }
+  return ret;
+}
+
 
 ObObjDatumMapType ObFTIndexRowCache::FTS_INDEX_TYPES[] = {OBJ_DATUM_STRING, OBJ_DATUM_STRING, OBJ_DATUM_8BYTE_DATA, OBJ_DATUM_8BYTE_DATA};
 ObObjDatumMapType ObFTIndexRowCache::FTS_DOC_WORD_TYPES[] = {OBJ_DATUM_STRING, OBJ_DATUM_STRING, OBJ_DATUM_8BYTE_DATA, OBJ_DATUM_8BYTE_DATA};
@@ -98,6 +132,8 @@ ObFTIndexRowCache::ObFTIndexRowCache()
   : rows_(),
     row_idx_(0),
     is_fts_index_aux_(true),
+    word_idx_(0),
+    doc_id_idx_(0),
     helper_(),
     is_inited_(false)
 {
@@ -110,6 +146,8 @@ ObFTIndexRowCache::~ObFTIndexRowCache()
 
 int ObFTIndexRowCache::init(
     const bool is_fts_index_aux,
+    const int64_t word_idx,
+    const int64_t doc_id_idx,
     const common::ObString &parser_name,
     const common::ObString &parser_properties)
 {
@@ -123,6 +161,8 @@ int ObFTIndexRowCache::init(
   } else {
     row_idx_ = 0;
     is_fts_index_aux_ = is_fts_index_aux;
+    word_idx_ = word_idx;
+    doc_id_idx_ = doc_id_idx;
     is_inited_ = true;
   }
   if (OB_UNLIKELY(!is_inited_)) {
@@ -144,7 +184,8 @@ int ObFTIndexRowCache::segment(const common::ObObjMeta &ft_obj_meta,
                                                                    ft_obj_meta,
                                                                    doc_id_datum,
                                                                    fulltext,
-                                                                   is_fts_index_aux_,
+                                                                   word_idx_,
+                                                                   doc_id_idx_,
                                                                    rows_))) {
   } else {
     row_idx_ = 0;
@@ -173,6 +214,8 @@ void ObFTIndexRowCache::reset()
   rows_.reset();
   row_idx_ = 0;
   is_fts_index_aux_ = true;
+  word_idx_ = 0;
+  doc_id_idx_ = 0;
   helper_.reset();
   if (OB_NOT_NULL(merge_memctx_)) {
     DESTROY_CONTEXT(merge_memctx_);
@@ -1096,7 +1139,7 @@ int ObFTDMLIterator::generate_ft_word_rows(const ObChunkDatumStore::StoredRow *s
   int64_t word_idx = 0;
   int64_t doc_id_idx = 0;
 
-  if (OB_FAIL(get_fts_word_doc_idx(view, word_idx, doc_id_idx))) {
+  if (OB_FAIL(get_fts_word_doc_idx_impl(view, word_idx, doc_id_idx))) {
   } else if (!is_update_ && OB_FAIL(get_ft_and_doc_id(store_row, doc_id_datum, ft, ft_meta))) {
   } else if (is_update_ && OB_FAIL(get_ft_and_doc_id_for_update(store_row, doc_id_datum, ft, ft_meta))) {
   } else if (OB_FAIL(ObDASDomainUtils::generate_fulltext_word_rows(allocator_,
@@ -1125,7 +1168,7 @@ int ObFTDMLIterator::scan_ft_word_rows(const ObChunkDatumStore::StoredRow *store
     const data_plane::ObDmlTableView &view = das_ctdef_->table_param_.get_data_table();
     int64_t doc_id_idx = 0;
     int64_t word_idx = 0;
-    if (OB_FAIL(get_fts_word_doc_idx(view, word_idx, doc_id_idx))) {
+    if (OB_FAIL(get_fts_word_doc_idx_impl(view, word_idx, doc_id_idx))) {
     } else {
       ObDatum doc_id_datum = store_row->cells()[row_projector_->at(doc_id_idx)];
 
@@ -1240,7 +1283,7 @@ int ObFTDMLIterator::build_ft_word_row(
   static int64_t DOC_LENGTH_IDX = 3;
   void *buf = nullptr;
   blocksstable::ObDatumRow *tmp_row = nullptr;
-  if (OB_FAIL(get_fts_word_doc_idx(view, word_idx, doc_id_idx))) {
+  if (OB_FAIL(get_fts_word_doc_idx_impl(view, word_idx, doc_id_idx))) {
   } else if (OB_ISNULL(src_row)) {
     ret = OB_INVALID_ARGUMENT;
   } else if (OB_UNLIKELY(4 != src_row->count_)) {
@@ -1273,7 +1316,7 @@ int ObFTDMLIterator::get_ft_and_doc_id(const ObChunkDatumStore::StoredRow *store
     const data_plane::ObDmlTableView &view = das_ctdef_->table_param_.get_data_table();
     int64_t doc_id_idx = 0;
     int64_t ft_idx = 0;
-    if (OB_FAIL(get_fts_word_doc_idx(view, ft_idx, doc_id_idx))) {
+    if (OB_FAIL(get_fts_word_doc_idx_impl(view, ft_idx, doc_id_idx))) {
     } else {
       ft = store_row->cells()[row_projector_->at(ft_idx)].get_string();
       ft_meta = das_ctdef_->column_types_.at(ft_idx);
@@ -1308,7 +1351,7 @@ int ObFTDMLIterator::get_ft_and_doc_id_for_update(const ObChunkDatumStore::Store
     const data_plane::ObDmlTableView &view = das_ctdef_->table_param_.get_data_table();
     int64_t doc_id_idx = 0;
     int64_t ft_idx = 0;
-    if (OB_FAIL(get_fts_word_doc_idx(view, ft_idx, doc_id_idx))) {
+    if (OB_FAIL(get_fts_word_doc_idx_impl(view, ft_idx, doc_id_idx))) {
     } else {
       doc_id_datum = store_row->cells()[row_projector_->at(doc_id_idx)];
 

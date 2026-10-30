@@ -44,19 +44,23 @@ public:
   ~ObFTIndexRowCache();
   int init(
       const bool is_fts_index_aux,
+      const int64_t word_idx,
+      const int64_t doc_id_idx,
       const common::ObString &parser_name,
       const common::ObString &parser_properties);
   int segment(const common::ObObjMeta &ft_obj_meta, const ObDatum &doc_id, const common::ObString &fulltext);
   int get_next_row(blocksstable::ObDatumRow *&row);
   void reset();
   void reuse();
-  TO_STRING_KV(K_(row_idx), K_(is_fts_index_aux), K_(helper), K_(is_inited),
-               "row_count", rows_.count());
+  TO_STRING_KV(K_(row_idx), K_(is_fts_index_aux), K_(word_idx), K_(doc_id_idx),
+               K_(helper), K_(is_inited), "row_count", rows_.count());
 private:
   lib::MemoryContext merge_memctx_;
   ObDomainIndexRow rows_;
   uint64_t row_idx_;
   bool is_fts_index_aux_;
+  int64_t word_idx_;
+  int64_t doc_id_idx_;
   storage::ObFTParseHelper helper_;
   bool is_inited_;
 
@@ -172,6 +176,12 @@ public:
       const common::ObIArray<common::ObTabletID> &related_tablet_ids,
       const bool is_main_table_in_fts_ddl,
       common::ObIArray<ObFTDocWordInfo> &doc_word_infos);
+  static int get_fts_word_doc_idx(const data_plane::ObDmlTableView &view,
+                                  int64_t &word_idx,
+                                  int64_t &doc_id_idx);
+  static int get_fts_word_doc_idx(const common::ObIArray<share::schema::ObColDesc> &cols,
+                                  int64_t &word_idx,
+                                  int64_t &doc_id_idx);
   static int generate_spatial_index_rows(
       ObIAllocator &allocator,
       common::ObISrsProvider &srs_provider,
