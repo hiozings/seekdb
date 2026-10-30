@@ -1095,6 +1095,12 @@ int ObDmlTableView::get_typed_doc_id_col_id(uint64_t &doc_id_col_id, ObDocIDType
       : table_view(state_)->get_typed_doc_id_col_id(doc_id_col_id, type);
 }
 
+const common::ObIArray<share::schema::ObColDesc> &ObDmlTableView::get_col_descs() const
+{
+  static const common::ObSEArray<share::schema::ObColDesc, 4> EMPTY_COL_DESCS;
+  return nullptr == table_view(state_) ? EMPTY_COL_DESCS : table_view(state_)->get_col_descs();
+}
+
 const common::ObString &ObDmlTableView::get_fts_parser_name() const
 {
   static const common::ObString EMPTY;

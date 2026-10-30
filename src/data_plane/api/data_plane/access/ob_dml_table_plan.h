@@ -119,6 +119,7 @@ public:
   int64_t get_data_table_rowkey_column_num() const;
   int64_t get_fulltext_col_id() const;
   int get_typed_doc_id_col_id(uint64_t &doc_id_col_id, ObDocIDType &type) const;
+  const common::ObIArray<share::schema::ObColDesc> &get_col_descs() const;
   const common::ObString &get_fts_parser_name() const;
   const common::ObString &get_fts_parser_property() const;
   const common::ObString &get_index_name() const;

@@ -36,6 +36,57 @@ namespace sql
 {
 using storage::ObFTWordMap;
 
+namespace {
+// Resolve word/doc-id positions from the table plan's column descriptors
+// (which are serialized with the plan) instead of assuming the historical
+// auxiliary key order.  The doc-id column is identified by the typed doc-id
+// column id; the word-segment column is the remaining string column.
+int get_fts_word_doc_idx(const data_plane::ObDmlTableView &view,
+                         int64_t &word_idx,
+                         int64_t &doc_id_idx)
+{
+  int ret = OB_SUCCESS;
+  word_idx = -1;
+  doc_id_idx = -1;
+  const common::ObIArray<share::schema::ObColDesc> &cols = view.get_col_descs();
+  uint64_t doc_id_col_id = OB_INVALID_ID;
+  ObDocIDType doc_id_type;
+  if (OB_FAIL(view.get_typed_doc_id_col_id(doc_id_col_id, doc_id_type))) {
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < cols.count(); ++i) {
+      if (cols.at(i).col_id_ == doc_id_col_id) {
+        doc_id_idx = i;
+      }
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && -1 == word_idx && i < cols.count(); ++i) {
+      if (i != doc_id_idx && ob_is_string_type(cols.at(i).col_type_.get_type())) {
+        word_idx = i;
+      }
+    }
+    if (OB_SUCC(ret) && (-1 == doc_id_idx || -1 == word_idx)) {
+      // Defensive fallback: generated doc-id columns are binary strings, word
+      // segment columns keep the source collation.
+      for (int64_t i = 0; OB_SUCC(ret) && i < cols.count(); ++i) {
+        const common::ObObjMeta &meta = cols.at(i).col_type_;
+        if (ob_is_string_type(meta.get_type())) {
+          if (CS_TYPE_BINARY == meta.get_collation_type()) {
+            if (-1 == doc_id_idx) {
+              doc_id_idx = i;
+            }
+          } else if (-1 == word_idx) {
+            word_idx = i;
+          }
+        }
+      }
+    }
+    if (OB_SUCC(ret) && (-1 == doc_id_idx || -1 == word_idx)) {
+      ret = OB_ERR_UNEXPECTED;
+    }
+  }
+  return ret;
+}
+} // namespace
+
 
 ObObjDatumMapType ObFTIndexRowCache::FTS_INDEX_TYPES[] = {OBJ_DATUM_STRING, OBJ_DATUM_STRING, OBJ_DATUM_8BYTE_DATA, OBJ_DATUM_8BYTE_DATA};
 ObObjDatumMapType ObFTIndexRowCache::FTS_DOC_WORD_TYPES[] = {OBJ_DATUM_STRING, OBJ_DATUM_STRING, OBJ_DATUM_8BYTE_DATA, OBJ_DATUM_8BYTE_DATA};
@@ -1049,10 +1100,12 @@ int ObFTDMLIterator::scan_ft_word_rows(const ObChunkDatumStore::StoredRow *store
   } else if (OB_UNLIKELY(OB_INVALID_ID == doc_id_col_id)) {
     ret = OB_INVALID_ARGUMENT;
   } else {
-    const bool is_fts_index_aux = das_ctdef_->table_param_.get_data_table().is_fts_index_aux();
-    const int64_t doc_id_idx = !is_fts_index_aux ? 0 : 1;
-
-    ObDatum doc_id_datum = store_row->cells()[row_projector_->at(doc_id_idx)];
+    const data_plane::ObDmlTableView &view = das_ctdef_->table_param_.get_data_table();
+    int64_t doc_id_idx = 0;
+    int64_t word_idx = 0;
+    if (OB_FAIL(get_fts_word_doc_idx(view, word_idx, doc_id_idx))) {
+    } else {
+      ObDatum doc_id_datum = store_row->cells()[row_projector_->at(doc_id_idx)];
 
     if (OB_FAIL(ret)) {
     } else if (OB_FAIL(data_plane::scan_ft_doc_words(
@@ -1094,6 +1147,7 @@ int ObFTDMLIterator::scan_ft_word_rows(const ObChunkDatumStore::StoredRow *store
           }
         }
       }
+    }
     }
   }
   if (OB_SUCC(ret) && (config::_enable_defensive_check() == 2)) {
@@ -1192,22 +1246,24 @@ int ObFTDMLIterator::get_ft_and_doc_id(const ObChunkDatumStore::StoredRow *store
   if (OB_UNLIKELY(OB_INVALID_ID == fts_col_id)) {
     ret = OB_INVALID_ARGUMENT;
   } else {
-    const bool is_fts_index_aux = das_ctdef_->table_param_.get_data_table().is_fts_index_aux();
-    const int64_t doc_id_idx = !is_fts_index_aux ? 0 : 1;
-    const int64_t ft_idx = !is_fts_index_aux ? 1 : 0;
-
-    ft = store_row->cells()[row_projector_->at(ft_idx)].get_string();
-    ft_meta = das_ctdef_->column_types_.at(ft_idx);
-    doc_id_datum = store_row->cells()[row_projector_->at(doc_id_idx)];
-
-    if (OB_FAIL(ObTextStringHelper::read_real_string_data(
-                                                          *lob_read_options_,
-                                                          &allocator_,
-                                                          ft_meta.get_type(),
-                                                          ft_meta.get_collation_type(),
-                                                          ft_meta.has_lob_header(),
-                                                          ft))) {
+    const data_plane::ObDmlTableView &view = das_ctdef_->table_param_.get_data_table();
+    int64_t doc_id_idx = 0;
+    int64_t ft_idx = 0;
+    if (OB_FAIL(get_fts_word_doc_idx(view, ft_idx, doc_id_idx))) {
     } else {
+      ft = store_row->cells()[row_projector_->at(ft_idx)].get_string();
+      ft_meta = das_ctdef_->column_types_.at(ft_idx);
+      doc_id_datum = store_row->cells()[row_projector_->at(doc_id_idx)];
+
+      if (OB_FAIL(ObTextStringHelper::read_real_string_data(
+                                                            *lob_read_options_,
+                                                            &allocator_,
+                                                            ft_meta.get_type(),
+                                                            ft_meta.get_collation_type(),
+                                                            ft_meta.has_lob_header(),
+                                                            ft))) {
+      } else {
+      }
     }
   }
   return ret;
@@ -1225,23 +1281,25 @@ int ObFTDMLIterator::get_ft_and_doc_id_for_update(const ObChunkDatumStore::Store
   if (OB_UNLIKELY(rowkey_col_cnt + 2 != old_proj_cnt || rowkey_col_cnt + 2 != new_proj_cnt)) {
     ret = OB_INVALID_ARGUMENT;
   } else {
-    const bool is_fts_index_aux = das_ctdef_->table_param_.get_data_table().is_fts_index_aux();
-    const int64_t doc_id_idx = !is_fts_index_aux ? 0 : 1;
-    const int64_t ft_idx = !is_fts_index_aux ? 1 : 0;
-
-    doc_id_datum = store_row->cells()[row_projector_->at(doc_id_idx)];
-
-    ft = store_row->cells()[row_projector_->at(ft_idx)].get_string();
-    ft_meta = das_ctdef_->column_types_.at(ft_idx);
-    if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(ObTextStringHelper::read_real_string_data(
-                                                                 *lob_read_options_,
-                                                                 &allocator_,
-                                                                 ft_meta.get_type(),
-                                                                 ft_meta.get_collation_type(),
-                                                                 true /* has lob header */,
-                                                                 ft))) {
+    const data_plane::ObDmlTableView &view = das_ctdef_->table_param_.get_data_table();
+    int64_t doc_id_idx = 0;
+    int64_t ft_idx = 0;
+    if (OB_FAIL(get_fts_word_doc_idx(view, ft_idx, doc_id_idx))) {
     } else {
+      doc_id_datum = store_row->cells()[row_projector_->at(doc_id_idx)];
+
+      ft = store_row->cells()[row_projector_->at(ft_idx)].get_string();
+      ft_meta = das_ctdef_->column_types_.at(ft_idx);
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(ObTextStringHelper::read_real_string_data(
+                                                                   *lob_read_options_,
+                                                                   &allocator_,
+                                                                   ft_meta.get_type(),
+                                                                   ft_meta.get_collation_type(),
+                                                                   true /* has lob header */,
+                                                                   ft))) {
+      } else {
+      }
     }
   }
   return ret;
