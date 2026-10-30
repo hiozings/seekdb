@@ -125,3 +125,28 @@ aux 写入，替换式 DML 在成本上**可行**，20%～30% 目标有理论空
 
 排序成本约 3.1～4.9s，而 posting 排序+写入实测 2.616s；替换式 DML 的
 20%～30% 目标有成本空间，但主机噪声较大，R1 需要 paired 多轮验证。
+
+## 8. CTE + JSON_TABLE ETL 结果（2026-10-30）
+
+OceanBase 支持在 CTE 中把 tokenize 结果转成 JSON，再用 JSON_TABLE 展开：
+
+```sql
+INSERT INTO posting
+SELECT jt.word, CAST(t.id AS CHAR), COUNT(*), JSON_LENGTH(t.tok)
+FROM (
+  SELECT id,
+         CAST(tokenize(cast(concat(title, ' ', content) as char), 'ik') AS JSON) AS tok
+  FROM docs
+) t,
+JSON_TABLE(t.tok, '$[*]' COLUMNS(word VARCHAR(1024) PATH '$')) jt
+GROUP BY jt.word, t.id, JSON_LENGTH(t.tok);
+```
+
+实测 20000 文档：
+
+- 耗时 **37.091s**；
+- 写入 813,664 行，`SUM(word_count)=813,664`，内容正确；
+- 对比正常构建 9.376s，仍慢约 4 倍。
+
+结论：CTE 方案解决了 SQL 语法问题，但独立 ETL 的 tokenize + 展开 + GROUP BY
+代价远超现有构建，不能作为 M4 路径；替换式 DML 必须共享现有 tokenize 结果。
