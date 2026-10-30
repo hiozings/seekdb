@@ -82,3 +82,50 @@ DDL row cache 按 schema 列位置写行、DML 写路径按另一套位置写行
 3. DDL row cache、DML 写路径、读路径使用的同一套位置。
 
 该实验的 spec/CG/op 改动已回退，分支保持在 `d5ae29ca4`。
+
+## 辅助表真实 schema（2026-10-30 catalog 实测）
+
+从 `oceanbase.__all_table` / `oceanbase.__all_column` 查到实际辅助表
+`__idx_518435_fti_all_ik`（table_id 518440）：
+
+| 列 | 类型/排序规则 | rowkey_position | index_position |
+|---|---|---:|---:|
+| `__word_segment` | VARCHAR, collation 45（utf8mb4_general_ci） | 1 | 1 |
+| `__doc_id` | VARCHAR, collation 63（binary） | 2 | 2 |
+| `__word_count` | int | 0 | 0 |
+| `__doc_length` | int | 0 | 0 |
+
+因此该辅助表的 rowkey 是 **`(word_segment, doc_id)`**，且 `word_segment`
+是 `WORD_SEGMENT()` 对原始列的直接拼接（不经过分词）。真正的 word posting
+在多值索引/存储层，不在这张表的行里。这也解释了：
+
+- 为什么 DDL 必须按整段 `word_segment` 排序（输入行键）；
+- 为什么改 doc_id 优先或去掉 ORDER BY 会报 rowkey order error；
+- 为什么只改辅助表键序不会改到真正的 word posting。
+
+## word 级 posting 表设计草案
+
+新增辅助表（或新 index type 的 aux 表）：
+
+```text
+rowkey: (word, doc_id)
+word:        VARCHAR, 解析器输出的 token，collation 与源列一致（general_ci）
+doc_id:      VARCHAR binary
+store:       word_count int, doc_length int
+```
+
+构建：
+
+1. 数据表 scan 时逐篇文档调用现有 FTS parser 得到 token/词频；
+2. 直接生成 `(word, doc_id, word_count, doc_length)` 行；
+3. 按 `(word, doc_id)` 排序后写入 posting 表，不再需要整段
+   `word_segment` 的 DDL 预排序。
+
+查询：
+
+- `MATCH` 查询分词后按 word 扫描 posting 表，取 doc_id 集合；
+- 相关性分数从 posting 行的 word_count/doc_length 或 doc 表读取；
+- 与现有 FTS 多值索引解耦。
+
+该设计需要新的辅助表/索引类型和插入/扫描计划，工作量大于此前的
+DAS 位置/键序改造；先做只读原型和构建耗时对比，再决定是否替换现有路径。
