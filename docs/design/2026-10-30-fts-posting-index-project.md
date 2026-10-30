@@ -159,3 +159,36 @@ store:       word_count int, doc_length int
 - 分支：`feature/fts-structural-rewrite`；
 - 已完成的只是读/写位置接口与 schema 事实记录，没有 posting 表代码；
 - 本立项文档提交后，从 M0 开始。
+
+## 7. M0 结果（2026-10-30）
+
+原型脚本：`unittest/storage/fts/posting_prototype.py`（只读 benchmark 数据库，
+通过引擎 `TOKENIZE` 生成 posting，不修改官方文件）。
+
+对 20000 行 benchmark 文档（title + content，IK parser）实测：
+
+| 指标 | 值 |
+|---|---:|
+| 文档数 | 20000 |
+| zero-token 文档 | 0 |
+| 总 token 数 | 813664 |
+| posting 行数（每文档去重词数求和） | 813664 |
+| 唯一词数 | 26858 |
+| 平均 tokens/doc | 40.683 |
+| p50 / p95 / max tokens/doc | 41 / 48 / 50 |
+| 解析错误 | 0 |
+
+高频词示例：`row`、`文档`、`是`、`the`、`的`。
+
+结论：IK all 索引约 81 万条 posting 行，word 键短、行数可控，`(word, doc_id)`
+posting 表在容量上可行；M1 可以按该规模设计 schema 与写入批次。
+
+M0 挂载点走查确认：
+
+- index type/schema：`src/share/schema/ob_schema_struct.h`、`src/sql/resolver/ddl/ob_fts_index_builder_util.cpp`；
+- DDL 构建：`src/rootserver/ddl_task/ob_fts_index_build_task.cpp`、`src/rootserver/ob_index_builder.cpp`、`src/rootserver/ddl_task/ob_ddl_common_rs_impl.cpp`；
+- DML/行生成：`src/sql/das/ob_das_domain_utils.cpp`；
+- 查询：`src/sql/das/ob_das_domain_utils.cpp`、`src/sql/engine/table/ob_table_scan_op.cpp`；
+- 测试：`unittest/storage/fts/` 下自建工具、`test_fts_hotpath`。
+
+M0 验收：posting 行数/词频由同一 parser 生成，统计与脚本一致；未改官方文件。
