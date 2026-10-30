@@ -274,6 +274,12 @@ int ObFtsIndexBuildTask::process()
       ret = OB_ERR_UNEXPECTED;
     }
     } // end switch
+    if (OB_SUCC(ret) && ObDDLTaskStatus::FAIL == static_cast<ObDDLTaskStatus>(task_status_)) {
+      int tmp_ret = drop_posting_aux_table();
+      if (OB_SUCCESS != tmp_ret) {
+        LOG_WARN("drop posting aux table on failed task failed", K(tmp_ret));
+      }
+    }
   }
   return ret;
 }
@@ -551,7 +557,9 @@ int ObFtsIndexBuildTask::create_posting_aux_table()
   common::ObSqlString name;
   common::ObSqlString sql;
   int64_t affected_rows = 0;
-  if (!config::_enable_fts_posting_index()) {
+  if (!config::_enable_fts_posting_index()
+      || OB_INVALID_ID == domain_index_aux_table_id_
+      || create_index_arg_.database_name_.empty()) {
   } else if (OB_ISNULL(GCTX.sql_proxy_)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(build_posting_table_name(create_index_arg_.database_name_,
@@ -574,7 +582,9 @@ int ObFtsIndexBuildTask::drop_posting_aux_table()
   common::ObSqlString name;
   common::ObSqlString sql;
   int64_t affected_rows = 0;
-  if (!config::_enable_fts_posting_index()) {
+  if (!config::_enable_fts_posting_index()
+      || OB_INVALID_ID == domain_index_aux_table_id_
+      || create_index_arg_.database_name_.empty()) {
   } else if (OB_ISNULL(GCTX.sql_proxy_)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(build_posting_table_name(create_index_arg_.database_name_,

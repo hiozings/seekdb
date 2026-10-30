@@ -351,3 +351,11 @@ CREATE TABLE IF NOT EXISTS `db`.`name` (
 - flag=false 新建：posting 数量 0，查询命中仍为 8001/11000/7332/20。
 
 剩余：build 失败时的 clean_on_failed 清理尚未接入；正常 create/drop 已通过。
+
+## 13. M1.3a 失败清理与保护（2026-10-30）
+
+- `create/drop_posting_aux_table()` 在 `domain_index_aux_table_id_` 无效或
+  database 名为空时直接跳过，避免失败任务生成非法表名；
+- `ObFtsIndexBuildTask::process()` 在 `task_status_ == FAIL` 且 flag 打开时
+  调用 `drop_posting_aux_table()`，失败只记录 WARN，不覆盖原错误；
+- 编译通过；失败路径的运行期测试尚未覆盖（需要构造 build 失败注入）。
