@@ -15,6 +15,8 @@
  */
 
 #include "sql/engine/expr/ob_expr_tokenize.h"
+#include "sql/engine/expr/tokenize_result_cache.h"
+#include "data_plane/fts/fts_parser_generation.h"
 
 #include "lib/alloc/alloc_struct.h"
 #include "lib/allocator/page_arena.h"
@@ -39,6 +41,16 @@ namespace oceanbase
 {
 namespace sql
 {
+namespace
+{
+thread_local TokenizeResultCache tokenize_result_cache;
+
+std::string_view tokenize_bytes(const ObString &value)
+{
+  return std::string_view(value.empty() ? "" : value.ptr(), value.length());
+}
+}
+
 ObExprTokenize::ObExprTokenize(common::ObIAllocator &alloc)
     : ObStringExprOperator(alloc,
                            T_FUN_TOKENIZE,
@@ -53,25 +65,61 @@ ObExprTokenize::~ObExprTokenize() {}
 int ObExprTokenize::eval_tokenize(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &expr_datum)
 {
   int ret = OB_SUCCESS;
-
-  ObEvalCtx::TempAllocGuard tmp_alloc_g(ctx);
-  common::ObArenaAllocator &temp_allocator = tmp_alloc_g.get_allocator();
-
-  ObIJsonBase *json_result = nullptr;
-  TokenizeParam param;
-
-  // check param num, which is checked in ObExprOperator::calc_result_typeN.
+  ObString text;
+  ObString parser_name = ObString::make_string(OB_DEFAULT_FULLTEXT_PARSER_NAME);
+  const uint64_t generation = storage::fts_parser_generation();
+  int64_t collation = CS_TYPE_INVALID;
+  bool cacheable = false;
+  bool hit = false;
   if (OB_UNLIKELY(expr.arg_cnt_ < 1 || expr.arg_cnt_ > 3)) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (OB_FAIL(parse_param(expr, ctx, temp_allocator, param))) {
-  } else if (OB_FAIL(tokenize_fulltext(param, param.output_mode_, temp_allocator, json_result))) {
-  } else if (OB_FAIL(ObJsonExprHelper::pack_json_res(expr,
-                                                     ctx,
-                                                     temp_allocator,
-                                                     json_result,
-                                                     expr_datum))) {
+  } else if (expr.arg_cnt_ <= 2) {
+    // Evaluate even computed/volatile arguments on every invocation. Only
+    // successful default-property calls are memoized; explicit JSON options
+    // and all misses retain the normal parser validation below.
+    ObDatum *text_datum = nullptr;
+    ObDatum *name_datum = nullptr;
+    if (OB_FAIL(expr.args_[0]->eval(ctx, text_datum))) {
+    } else if (expr.arg_cnt_ == 2 && OB_FAIL(expr.args_[1]->eval(ctx, name_datum))) {
+    } else {
+      if (!text_datum->is_null()) { text = text_datum->get_string(); }
+      if (name_datum != nullptr && !name_datum->is_null()) {
+        parser_name = name_datum->get_string().trim();
+      }
+      collation = expr.args_[0]->obj_meta_.get_collation_type();
+      cacheable = generation != 0 && text.length() <= TokenizeResultCache::MAX_TEXT_BYTES
+          && parser_name.length() <= TokenizeResultCache::MAX_PARSER_BYTES;
+      std::string_view cached;
+      if (cacheable && tokenize_result_cache.get(generation, collation,
+          tokenize_bytes(parser_name), tokenize_bytes(text), cached)) {
+        ObString raw_result(static_cast<int32_t>(cached.size()), cached.data());
+        ret = ObJsonExprHelper::pack_json_str_res(expr, ctx, expr_datum, raw_result);
+        hit = true;
+      }
+    }
   }
-
+  if (OB_SUCC(ret) && !hit) {
+    // Allocators and JSON/parser objects are needed only for a cache miss.
+    ObEvalCtx::TempAllocGuard tmp_alloc_g(ctx);
+    common::ObArenaAllocator &temp_allocator = tmp_alloc_g.get_allocator();
+    ObIJsonBase *json_result = nullptr;
+    TokenizeParam param;
+    if (OB_FAIL(parse_param(expr, ctx, temp_allocator, param))) {
+    } else if (OB_FAIL(tokenize_fulltext(param, param.output_mode_, temp_allocator, json_result))) {
+    } else if (cacheable && json_result != nullptr && !json_result->is_bin()) {
+      ObString raw_result;
+      // Keep raw JSON bytes, never a LOB locator or an allocator-owned view.
+      // Serialize only once on a miss, just as pack_json_res does for a tree.
+      if (OB_FAIL(share::ObJsonWrapper::get_raw_binary(json_result, raw_result, &temp_allocator))) {
+      } else if (OB_FAIL(ObJsonExprHelper::pack_json_str_res(expr, ctx, expr_datum, raw_result))) {
+      } else {
+        tokenize_result_cache.put(generation, collation, tokenize_bytes(parser_name),
+                                  tokenize_bytes(text), tokenize_bytes(raw_result));
+      }
+    } else if (OB_FAIL(ObJsonExprHelper::pack_json_res(
+                           expr, ctx, temp_allocator, json_result, expr_datum))) {
+    }
+  }
   return ret;
 }
 
@@ -86,11 +134,9 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
   int64_t doc_len = 0;
   storage::ObFTWordMap token_map;
 
-  ObArenaAllocator tmp_parse_alloc(ObMemAttr("Tmp buffer"));
-
   if (TokenizeParam::OUTPUT_MODE::DEFAULT != mode && TokenizeParam::OUTPUT_MODE::ALL != mode) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (OB_FAIL(tokenize_helper.init(&allocator, param.parser_name_, param.properties_))) {
+  } else if (OB_FAIL(tokenize_helper.init(&allocator, param.parser_, param.parser_property_))) {
   } else if (OB_FAIL(token_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
   } else if (
       (0 != param.fulltext_.length())
@@ -125,11 +171,16 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
 
 ObExprTokenize::TokenizeParam ::TokenizeParam()
   : allocator_(ObMemAttr("TokenizeParam")),
+    parser_(),
+    parser_name_buf_(),
     parser_name_(ObString(OB_DEFAULT_FULLTEXT_PARSER_NAME)),
+    properties_(),
+    parser_property_(),
     meta_(),
     fulltext_(),
     output_mode_(OUTPUT_MODE::DEFAULT)
 {
+  parser_name_buf_[0] = '\0';
 }
 
 int ObExprTokenize::TokenizeParam::parse_json_param(const ObIJsonBase *obj)
@@ -221,16 +272,11 @@ int ObExprTokenize::parse_param(const ObExpr &expr,
 int ObExprTokenize::construct_ft_parser_inner_name(const ObString &input_str, TokenizeParam &param)
 {
   int ret = OB_SUCCESS;
-  storage::ObFTParser parser;
-
-  char *parser_name_buf = nullptr;
-  if (OB_ISNULL(parser_name_buf
-                = static_cast<char *>(param.allocator_.alloc(storage::OB_FT_PARSER_NAME_LENGTH)))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-  } else if (OB_FAIL(parser.init(input_str))) {
-  } else if (OB_FAIL(parser.serialize_to_str(parser_name_buf, storage::OB_FT_PARSER_NAME_LENGTH))) {
+  if (OB_FAIL(param.parser_.init(input_str))) {
+  } else if (OB_FAIL(param.parser_.serialize_to_str(param.parser_name_buf_,
+                                                    sizeof(param.parser_name_buf_)))) {
   } else {
-    param.parser_name_ = ObString::make_string(parser_name_buf);
+    param.parser_name_ = ObString::make_string(param.parser_name_buf_);
   }
   return ret;
 }
@@ -375,15 +421,20 @@ int ObExprTokenize::parse_parser_properties(const ObExpr &expr,
 int ObExprTokenize::TokenizeParam::reform_parser_properties(const ObString &properties)
 {
   int ret = OB_SUCCESS;
-  storage::ObFTParserJsonProps parser_properties;
-
-  if (OB_FAIL(parser_properties.init())) {
-  } else if (OB_FAIL(parser_properties.parse_from_valid_str(properties))) {
-    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "parser properties invalid.");
-  } else if (OB_FAIL(parser_properties.rebuild_props_for_ddl(parser_name_,
-                                                             ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                                                             true))) {
-  } else if (OB_FAIL(parser_properties.to_format_json(allocator_, properties_))) {
+  if (properties.empty()) {
+    // No JSON is needed for defaults: the helper property can be built directly for the parser.
+    if (OB_FAIL(parser_property_.parse_for_parser_helper(parser_, properties))) {
+    }
+  } else {
+    storage::ObFTParserJsonProps parser_properties;
+    if (OB_FAIL(parser_properties.init())) {
+    } else if (OB_FAIL(parser_properties.parse_from_valid_str(properties))) {
+      LOG_USER_ERROR(OB_INVALID_ARGUMENT, "parser properties invalid.");
+    } else if (OB_FAIL(parser_properties.rebuild_props_for_ddl(parser_name_,
+                                                               ObCollationType::CS_TYPE_UTF8MB4_BIN,
+                                                               true))) {
+    } else if (OB_FAIL(parser_property_.parse_for_parser_helper(parser_, parser_properties))) {
+    }
   }
 
   return ret;

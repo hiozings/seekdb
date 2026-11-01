@@ -414,6 +414,16 @@ public:
   // set brs_.end_ = true when end of data stream is touched
   // (ensure that the current batch has no data)
   virtual int get_next_batch(const int64_t max_row_cnt, const ObBatchRows *&batch_rows);
+  // Optimization hint: the parent does not consume this operator's output
+  // columns, so a table scan may skip projecting them.
+  virtual void set_skip_projection() {}
+  // Optional exact match count for COUNT(*) pushdown. Operators that cannot
+  // provide a cheap exact count return OB_NOT_SUPPORTED.
+  virtual int get_match_count(int64_t &count)
+  {
+    UNUSED(count);
+    return common::OB_NOT_SUPPORTED;
+  }
   // inner get next batch, no need to pass %batch_rows, set result to %brs_ member.
   // set brs_.end_ = true when end of data stream is touched
   // (don't care if there is data in the current batch)

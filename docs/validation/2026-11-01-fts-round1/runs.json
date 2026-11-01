@@ -1,0 +1,122 @@
+[
+  {
+    "label": "1-baseline",
+    "binary": "/work/build_bench/bin/official-5bce-seekdb",
+    "sha256": "d1ed8d37c14f39f88c4689558fbed2c5826426e78b0a5975453abc9cfac8ece3",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/work/build_bench/bin/official-5bce-seekdb",
+      "--nodaemon",
+      "--base-dir=/work/build_bench/20261101-final-ab/1-baseline.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "1-baseline.report"
+  },
+  {
+    "label": "2-candidate",
+    "binary": "/work/build_bench/bin/candidate-20261101",
+    "sha256": "e0871a0446936e9654cc4bad8f3c7fc26d8c8a151f33c39dc6854d6a80cfb163",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/work/build_bench/bin/candidate-20261101",
+      "--nodaemon",
+      "--base-dir=/work/build_bench/20261101-final-ab/2-candidate.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "2-candidate.report"
+  },
+  {
+    "label": "3-candidate",
+    "binary": "/work/build_bench/bin/candidate-20261101",
+    "sha256": "e0871a0446936e9654cc4bad8f3c7fc26d8c8a151f33c39dc6854d6a80cfb163",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/work/build_bench/bin/candidate-20261101",
+      "--nodaemon",
+      "--base-dir=/work/build_bench/20261101-final-ab/3-candidate.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "3-candidate.report"
+  },
+  {
+    "label": "4-baseline",
+    "binary": "/work/build_bench/bin/official-5bce-seekdb",
+    "sha256": "d1ed8d37c14f39f88c4689558fbed2c5826426e78b0a5975453abc9cfac8ece3",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/work/build_bench/bin/official-5bce-seekdb",
+      "--nodaemon",
+      "--base-dir=/work/build_bench/20261101-final-ab/4-baseline.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "4-baseline.report"
+  },
+  {
+    "label": "5-baseline",
+    "binary": "/work/build_bench/bin/official-5bce-seekdb",
+    "sha256": "d1ed8d37c14f39f88c4689558fbed2c5826426e78b0a5975453abc9cfac8ece3",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/work/build_bench/bin/official-5bce-seekdb",
+      "--nodaemon",
+      "--base-dir=/work/build_bench/20261101-final-ab/5-baseline.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "5-baseline.report"
+  },
+  {
+    "label": "6-candidate",
+    "binary": "/work/build_bench/bin/candidate-20261101",
+    "sha256": "e0871a0446936e9654cc4bad8f3c7fc26d8c8a151f33c39dc6854d6a80cfb163",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10",
+      "/work/build_bench/bin/candidate-20261101",
+      "--nodaemon",
+      "--base-dir=/work/build_bench/20261101-final-ab/6-candidate.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=2",
+      "--log-level=WARN"
+    ],
+    "report": "6-candidate.report"
+  }
+]

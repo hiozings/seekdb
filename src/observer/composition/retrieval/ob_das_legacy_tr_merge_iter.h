@@ -19,6 +19,7 @@
 
 #include "sql/das/iter/ob_das_iter.h"
 #include "sql/das/ob_das_ir_define.h"
+#include "sql/das/ob_fts_compact_registry.h"
 #include "sql/das/iter/sparse_retrieval/ob_das_tr_merge_iter.h"
 #include "storage/retrieval/ob_i_sparse_retrieval_iter.h"
 #include "storage/retrieval/ob_text_daat_iter.h"
@@ -59,6 +60,8 @@ protected:
   virtual int inner_release() override;
   virtual int inner_get_next_row() override;
   virtual int inner_get_next_rows(int64_t &count, int64_t capacity) override;
+  virtual void set_skip_projection() override { skip_projection_ = true; }
+  int get_match_count(int64_t &count) override;
 public:
   int set_related_tablet_ids(
       const ObDASFTSTabletID &related_tablet_ids)
@@ -148,6 +151,9 @@ private:
   };
   bool check_rangekey_inited_;
   bool inv_idx_tablet_switched_;
+  bool use_compact_fts_;
+  bool skip_projection_;
+  ObFtsCompactEntry compact_entry_;
   bool is_inited_;
   DISALLOW_COPY_AND_ASSIGN(ObDASLegacyTRMergeIter);
 };

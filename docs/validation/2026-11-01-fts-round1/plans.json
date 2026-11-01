@@ -1,0 +1,17 @@
+{
+  "membership": {
+    "returncode": 0,
+    "output": "=================================================================\n|ID|OPERATOR             |NAME            |EST.ROWS|EST.TIME(us)|\n-----------------------------------------------------------------\n|0 |SCALAR GROUP BY      |                |1       |587536      |\n|1 |└─TEXT RETRIEVAL SCAN|docs(fti_all_ik)|12669   |587307      |\n=================================================================\nOutputs & filters:\n-------------------------------------\n  0 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256\n      group(nil), agg_func([T_FUN_COUNT(*)])\n  1 - output(nil), filter(nil), rowset=256\n      access(nil), partitions(p0)\n      is_index_back=false, is_global_index=false, \n      calc_relevance=false, match_expr(MATCH(docs.title, docs.content) AGAINST('全文索引 分词器')), \n      pushdown_match_filter(MATCH(docs.title, docs.content) AGAINST('全文索引 分词器'))\n",
+    "error": ""
+  },
+  "scored": {
+    "returncode": 0,
+    "output": "===============================================================\n|ID|OPERATOR           |NAME            |EST.ROWS|EST.TIME(us)|\n---------------------------------------------------------------\n|0 |TEXT RETRIEVAL SCAN|docs(fti_all_ik)|12669   |369703      |\n===============================================================\nOutputs & filters:\n-------------------------------------\n  0 - output([docs.id], [MATCH(docs.title, docs.content) AGAINST('全文索引 分词器')]), filter(nil), rowset=256\n      access([docs.id]), partitions(p0)\n      is_index_back=true, is_global_index=false, \n      calc_relevance=true, match_expr(MATCH(docs.title, docs.content) AGAINST('全文索引 分词器')), \n      pushdown_match_filter(MATCH(docs.title, docs.content) AGAINST('全文索引 分词器')), \n      sort_keys([MATCH(docs.title, docs.content) AGAINST('全文索引 分词器'), DESC]), limit(20), offset(nil), with_ties(false)\n",
+    "error": ""
+  },
+  "limited_count": {
+    "returncode": 0,
+    "output": "=======================================================================\n|ID|OPERATOR               |NAME                |EST.ROWS|EST.TIME(us)|\n-----------------------------------------------------------------------\n|0 |SCALAR GROUP BY        |                    |1       |949         |\n|1 |└─SUBPLAN SCAN         |v                   |20      |948         |\n|2 |  └─TEXT RETRIEVAL SCAN|docs(fti_content_ik)|20      |948         |\n=======================================================================\nOutputs & filters:\n-------------------------------------\n  0 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256\n      group(nil), agg_func([T_FUN_COUNT(*)])\n  1 - output(nil), filter(nil), rowset=256\n      access(nil)\n  2 - output([1]), filter(nil), rowset=256\n      access(nil), partitions(p0)\n      limit(20), offset(nil), is_index_back=false, is_global_index=false, \n      calc_relevance=false, match_expr(MATCH(docs.content) AGAINST('倒排索引 tokenizer')), \n      pushdown_match_filter(MATCH(docs.content) AGAINST('倒排索引 tokenizer'))\n",
+    "error": ""
+  }
+}

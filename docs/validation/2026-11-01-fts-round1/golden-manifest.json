@@ -1,0 +1,14 @@
+{
+  "golden-baseline.json": {
+    "sha256": "7692105fbdfd9e38ac0cf10d29bb764ec8999633a75ca4399fd7a4efc0435197",
+    "bytes": 637184,
+    "compressed_bytes": 154996,
+    "cases": 508
+  },
+  "golden-candidate.json": {
+    "sha256": "7692105fbdfd9e38ac0cf10d29bb764ec8999633a75ca4399fd7a4efc0435197",
+    "bytes": 637184,
+    "compressed_bytes": 154996,
+    "cases": 508
+  }
+}

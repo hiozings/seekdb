@@ -1,0 +1,164 @@
+[
+  {
+    "round": 1,
+    "layout": "before",
+    "query": "cn",
+    "queries": 2000,
+    "server_cpu_us": 1675.0,
+    "wall_us": 1873.7586620000002,
+    "base": "/work/build_bench/20261101-decode-ab/2-candidate.instance"
+  },
+  {
+    "round": 1,
+    "layout": "before",
+    "query": "beng",
+    "queries": 2000,
+    "server_cpu_us": 2360.0,
+    "wall_us": 2626.370566499645,
+    "base": "/work/build_bench/20261101-decode-ab/2-candidate.instance"
+  },
+  {
+    "round": 1,
+    "layout": "before",
+    "query": "mixed",
+    "queries": 2000,
+    "server_cpu_us": 1745.0,
+    "wall_us": 2006.4186130002781,
+    "base": "/work/build_bench/20261101-decode-ab/2-candidate.instance"
+  },
+  {
+    "round": 2,
+    "layout": "after",
+    "query": "cn",
+    "queries": 2000,
+    "server_cpu_us": 1445.0,
+    "wall_us": 1718.4336914997405,
+    "base": "/work/build_bench/20261101-raw-ab/2-candidate.instance"
+  },
+  {
+    "round": 2,
+    "layout": "after",
+    "query": "beng",
+    "queries": 2000,
+    "server_cpu_us": 2195.0000000000005,
+    "wall_us": 2366.9698605008307,
+    "base": "/work/build_bench/20261101-raw-ab/2-candidate.instance"
+  },
+  {
+    "round": 2,
+    "layout": "after",
+    "query": "mixed",
+    "queries": 2000,
+    "server_cpu_us": 1549.9999999999998,
+    "wall_us": 1823.339651000424,
+    "base": "/work/build_bench/20261101-raw-ab/2-candidate.instance"
+  },
+  {
+    "round": 3,
+    "layout": "after",
+    "query": "cn",
+    "queries": 2000,
+    "server_cpu_us": 1470.0,
+    "wall_us": 1717.6129294994098,
+    "base": "/work/build_bench/20261101-raw-ab/2-candidate.instance"
+  },
+  {
+    "round": 3,
+    "layout": "after",
+    "query": "beng",
+    "queries": 2000,
+    "server_cpu_us": 2170.0,
+    "wall_us": 2382.5176730006206,
+    "base": "/work/build_bench/20261101-raw-ab/2-candidate.instance"
+  },
+  {
+    "round": 3,
+    "layout": "after",
+    "query": "mixed",
+    "queries": 2000,
+    "server_cpu_us": 1575.0000000000002,
+    "wall_us": 1862.2128059996614,
+    "base": "/work/build_bench/20261101-raw-ab/2-candidate.instance"
+  },
+  {
+    "round": 4,
+    "layout": "before",
+    "query": "cn",
+    "queries": 2000,
+    "server_cpu_us": 1765.0000000000002,
+    "wall_us": 1952.3331569998847,
+    "base": "/work/build_bench/20261101-decode-ab/2-candidate.instance"
+  },
+  {
+    "round": 4,
+    "layout": "before",
+    "query": "beng",
+    "queries": 2000,
+    "server_cpu_us": 1135.0000000000002,
+    "wall_us": 1316.5495709999957,
+    "base": "/work/build_bench/20261101-decode-ab/2-candidate.instance"
+  },
+  {
+    "round": 4,
+    "layout": "before",
+    "query": "mixed",
+    "queries": 2000,
+    "server_cpu_us": 384.9999999999998,
+    "wall_us": 494.36826150031266,
+    "base": "/work/build_bench/20261101-decode-ab/2-candidate.instance"
+  },
+  {
+    "round": 5,
+    "layout": "before",
+    "query": "cn",
+    "queries": 2000,
+    "server_cpu_us": 1745.0,
+    "wall_us": 1930.8197079999445,
+    "base": "/work/build_bench/20261101-decode-ab/2-candidate.instance"
+  },
+  {
+    "round": 5,
+    "layout": "before",
+    "query": "beng",
+    "queries": 2000,
+    "server_cpu_us": 2344.9999999999995,
+    "wall_us": 2603.7722355004007,
+    "base": "/work/build_bench/20261101-decode-ab/2-candidate.instance"
+  },
+  {
+    "round": 5,
+    "layout": "before",
+    "query": "mixed",
+    "queries": 2000,
+    "server_cpu_us": 1724.9999999999995,
+    "wall_us": 2002.4981320002555,
+    "base": "/work/build_bench/20261101-decode-ab/2-candidate.instance"
+  },
+  {
+    "round": 6,
+    "layout": "after",
+    "query": "cn",
+    "queries": 2000,
+    "server_cpu_us": 1484.9999999999998,
+    "wall_us": 1746.3909680000143,
+    "base": "/work/build_bench/20261101-raw-ab/2-candidate.instance"
+  },
+  {
+    "round": 6,
+    "layout": "after",
+    "query": "beng",
+    "queries": 2000,
+    "server_cpu_us": 1989.9999999999998,
+    "wall_us": 2193.1046150002658,
+    "base": "/work/build_bench/20261101-raw-ab/2-candidate.instance"
+  },
+  {
+    "round": 6,
+    "layout": "after",
+    "query": "mixed",
+    "queries": 2000,
+    "server_cpu_us": 1530.0000000000002,
+    "wall_us": 1800.8123310000883,
+    "base": "/work/build_bench/20261101-raw-ab/2-candidate.instance"
+  }
+]

@@ -138,8 +138,30 @@ int ObTransformSimplifyOrderby::remove_order_by_for_view_stmt(ObDMLStmt *stmt, b
       } else if (1 == table_items.count()) {
         if (stmt->is_select_stmt()) {
           select_stmt = static_cast<ObSelectStmt*>(stmt);
-          if ((select_stmt->has_group_by() || select_stmt->has_distinct() ||
-                     select_stmt->has_order_by()) && !view_stmt->has_limit() &&
+          const ObAggFunRawExpr *count_expr = select_stmt->get_aggr_item_size() == 1
+              ? select_stmt->get_aggr_item(0) : nullptr;
+          // COUNT(*) observes only cardinality. A normal LIMIT/OFFSET has the
+          // same cardinality in any order, unlike WITH TIES, COUNT(column),
+          // outer predicates or aggregates that inspect the selected rows.
+          const bool counts_rows_only = select_stmt->is_scala_group_by()
+              && select_stmt->get_select_item_size() == 1
+              && count_expr != nullptr && count_expr->get_expr_type() == T_FUN_COUNT
+              && count_expr->get_param_count() == 0
+              && select_stmt->get_select_item(0).expr_ == count_expr
+              && select_stmt->get_condition_exprs().empty()
+              && select_stmt->get_having_exprs().empty()
+              && !select_stmt->has_window_function_filter()
+              && !view_stmt->is_fetch_with_ties() && !view_stmt->has_for_update()
+              && view_stmt->get_match_exprs().count() == 1
+              && view_stmt->get_match_exprs().at(0) != nullptr
+              && !view_stmt->get_match_exprs().at(0)->is_es_match()
+              && view_stmt->get_match_exprs().at(0)->get_mode_flag() == NATURAL_LANGUAGE_MODE
+              && view_stmt->get_match_exprs().at(0)->get_columns_boosts().empty()
+              && view_stmt->get_order_item_size() == 1
+              && view_stmt->get_order_item(0).expr_ == view_stmt->get_match_exprs().at(0);
+          const bool removes_unlimited_order = (select_stmt->has_group_by()
+              || select_stmt->has_distinct() || select_stmt->has_order_by()) && !view_stmt->has_limit();
+          if ((removes_unlimited_order || counts_rows_only) &&
                      view_stmt->has_order_by() &&
                      OB_FAIL(do_remove_stmt_order_by(view_stmt, happened))) {
           } else {

@@ -19,6 +19,9 @@
 #define USING_LOG_PREFIX STORAGE_FTS
 
 #include "storage/fts/ob_fts_parser_helper.h"
+#include "data_plane/fts/fts_parser_generation.h"
+#include "storage/fts/fts_token_cache.h"
+#include <atomic>
 
 #include "common/json_type/ob_json_tree.h"
 #include "share/ob_force_print_log.h"
@@ -142,7 +145,14 @@ int ObFTParser::get_desc(const ObIFTParserDesc *&parser_desc) const
 // ObFTParseData
 
 static ObFTParseData *g_ftparse_data = nullptr;
+static std::atomic<uint64_t> g_fts_generation{0};
 static constexpr const char *FTPARSE_DATA_MEMORY_LABEL = "FtParse";
+
+uint64_t fts_parser_generation()
+{
+  const uint64_t generation = g_fts_generation.load(std::memory_order_acquire);
+  return (generation & 1) != 0 ? generation : 0;
+}
 
 int ObFTParseData::init_global()
 {
@@ -186,7 +196,13 @@ int ObFTParseData::init()
   } else if (OB_FAIL(init_and_set_stopword_list())) {
   } else if (OB_FAIL(init_dict_hub())) {
   } else {
+    // An optional optimization must not prevent FTS startup under memory pressure.
+    const int cache_ret = FTTokenCache::init_global();
+    if (OB_SUCCESS != cache_ret) {
+      LOG_INFO("segmentation cache unavailable", K(cache_ret));
+    }
     is_inited_ = true;
+    g_fts_generation.fetch_add(1, std::memory_order_release);
     FLOG_INFO("succeeded to initialize fulltext parser data", KP(this));
   }
 
@@ -225,6 +241,12 @@ int ObFTParseData::init_dict_hub()
 
 void ObFTParseData::destroy()
 {
+  if (is_inited_) {
+    // The existing subsystem shutdown contract requires quiescent readers.
+    // Invalidate worker-local results before releasing immutable dictionaries.
+    g_fts_generation.fetch_add(1, std::memory_order_release);
+  }
+  FTTokenCache::deinit_global();
   if (OB_NOT_NULL(stop_word_checker_)) {
     stop_word_checker_->destroy();
     OB_DELETEx(ObStopWordChecker, &handler_allocator_, stop_word_checker_);
@@ -350,6 +372,34 @@ int ObFTParseHelper::init(
   return ret;
 }
 
+int ObFTParseHelper::init(
+    common::ObIAllocator *allocator,
+    const ObFTParser &parser,
+    const ObFTParserProperty &parser_property)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(is_inited_)) {
+    ret = OB_INIT_TWICE;
+  } else if (OB_ISNULL(allocator) || OB_UNLIKELY(!parser.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+  } else {
+    parser_name_ = parser;
+    parser_property_ = parser_property;
+    if (OB_FAIL(parser_name_.get_desc(parser_desc_))) {
+    } else if (OB_ISNULL(parser_desc_)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(set_add_word_flag(*parser_desc_))) {
+    } else {
+      allocator_ = allocator;
+      is_inited_ = true;
+    }
+  }
+  if (OB_FAIL(ret) && OB_UNLIKELY(!is_inited_)) {
+    reset();
+  }
+  return ret;
+}
+
 void ObFTParseHelper::reset()
 {
   parser_desc_ = nullptr;
@@ -377,19 +427,51 @@ int ObFTParseHelper::segment(
   } else if (OB_ISNULL(cs = common::ObCharset::get_charset(type))) {
     ret = OB_ERR_UNEXPECTED;
   } else {
-    words.reuse();
-    ObAddWord add_word(parser_property_, meta, add_word_flag_, *allocator_, words);
-    if (OB_FAIL(segment(
-                    parser_property_,
-                    parser_name_.get_parser_version(),
-                    parser_desc_,
-                    cs,
-                    fulltext,
-                    fulltext_len,
-                    *allocator_,
-                    add_word))) {
-    } else {
-      doc_length = add_word.get_add_word_count();
+    if (!words.empty()) {
+      // reuse() locks every bucket; a freshly created map has nothing to clear.
+      words.reuse();
+    }
+    FTTokenCache *cache = FTTokenCache::get_instance();
+    // IK is the expensive dictionary parser. Cheap parsers keep their direct
+    // path; unknown/non-varchar inputs retain the original validation below.
+    const bool use_cache = cache != nullptr && parser_name_.is_ik()
+        && meta.get_type() == ObVarcharType && words.created()
+        && fulltext != nullptr && fulltext_len > 0
+        && fulltext_len <= FTTokenCache::MAX_ENTRY_BYTES
+        && ObCharset::charset_type_by_coll(type) == CHARSET_UTF8MB4;
+    FTTokenCacheKey key;
+    bool found = false;
+    if (use_cache) {
+      uint64_t parser_hash = 0;
+      const int64_t version = parser_name_.get_parser_version();
+      parser_name_.get_parser_name().hash(parser_hash);
+      key.parser_hash_ = common::murmurhash(&version, sizeof(version), parser_hash);
+      key.prop_hash_ = FTTokenCache::property_fingerprint(parser_property_);
+      key.text_hash_ = common::murmurhash(fulltext, fulltext_len, 0);
+      key.text_len_ = fulltext_len;
+      key.word_bucket_count_ = words.bucket_count();
+      key.collation_ = type;
+      const int cache_ret = cache->try_get(key, parser_name_.get_parser_name(), version,
+          parser_property_, fulltext, fulltext_len, *allocator_, words, doc_length, found);
+      if (OB_SUCCESS != cache_ret) {
+        // Replay can fail after copying some words. Never combine a partial
+        // replay with a fresh parse, and never expose cache-owned pointers.
+        words.reuse();
+        found = false;
+      }
+    }
+    if (!found) {
+      ObAddWord add_word(parser_property_, meta, add_word_flag_, *allocator_, words);
+      if (OB_FAIL(segment(parser_property_, parser_name_.get_parser_version(), parser_desc_,
+                          cs, fulltext, fulltext_len, *allocator_, add_word))) {
+      } else {
+        doc_length = add_word.get_add_word_count();
+        if (use_cache) {
+          // Failed insertion is a miss on the next call, not a SQL failure.
+          (void)cache->try_store(key, parser_name_.get_parser_name(), parser_name_.get_parser_version(),
+              parser_property_, fulltext, fulltext_len, doc_length, words);
+        }
+      }
     }
   }
   LOG_DEBUG("ft parse segment", K(ret), K(type), K(add_word_flag_), K(parser_name_),

@@ -33,6 +33,16 @@ int ObScalarAggregateOp::inner_open()
   int ret = OB_SUCCESS;
   
   if (OB_FAIL(ObGroupByOp::inner_open())) {
+  } else if (MY_SPEC.aggr_infos_.count() == 1
+             && T_FUN_COUNT == MY_SPEC.aggr_infos_.at(0).real_aggr_type_
+             && !MY_SPEC.aggr_infos_.at(0).has_distinct_
+             && MY_SPEC.aggr_infos_.at(0).param_exprs_.empty()
+             && OB_NOT_NULL(child_)
+             && PHY_TABLE_SCAN == child_->get_spec().type_) {
+    child_->set_skip_projection();
+    LOG_DEBUG("skip projection for count star on table scan");
+  }
+  if (OB_FAIL(ret)) {
   } else if (OB_FAIL(ObChunkStoreUtil::alloc_dir_id(dir_id_))) {
   } else if (FALSE_IT(aggr_processor_.set_dir_id(dir_id_))) {
   } else if (FALSE_IT(aggr_processor_.set_io_event_observer(&io_event_observer_))) {
@@ -99,6 +109,38 @@ int ObScalarAggregateOp::inner_get_next_row()
   if (started_) {
     ret = OB_ITER_END;
   } else {
+    int64_t match_count = 0;
+    int count_ret = OB_NOT_SUPPORTED;
+    if (MY_SPEC.aggr_infos_.count() == 1
+        && T_FUN_COUNT == MY_SPEC.aggr_infos_.at(0).real_aggr_type_
+        && !MY_SPEC.aggr_infos_.at(0).has_distinct_
+        && MY_SPEC.aggr_infos_.at(0).param_exprs_.empty()
+        && OB_NOT_NULL(child_)
+        && PHY_TABLE_SCAN == child_->get_spec().type_) {
+      count_ret = child_->get_match_count(match_count);
+    }
+    if (OB_SUCCESS == count_ret) {
+      started_ = true;
+      clear_evaluated_flag();
+      if (0 == match_count) {
+        ret = aggr_processor_.collect_for_empty_set();
+      } else {
+        ObAggregateProcessor::GroupRow *group_row = NULL;
+        if (OB_FAIL(aggr_processor_.get_group_row(0, group_row))) {
+        } else if (OB_ISNULL(group_row)) {
+          ret = OB_ERR_UNEXPECTED;
+        } else if (OB_FAIL(aggr_processor_.prepare(*group_row))) {
+        } else if (OB_UNLIKELY(group_row->n_cells_ < 1 || OB_ISNULL(group_row->aggr_cells_))) {
+          ret = OB_ERR_UNEXPECTED;
+        } else {
+          group_row->aggr_cells_[0].set_row_count(match_count);
+          if (OB_FAIL(aggr_processor_.collect())) {
+          }
+        }
+      }
+    } else if (OB_NOT_SUPPORTED != count_ret && OB_NOT_INIT != count_ret) {
+      ret = count_ret;
+    } else {
     LOG_DEBUG("before inner_get_next_row",
               "aggr_hold_size", aggr_processor_.get_aggr_hold_size(),
               "aggr_used_size", aggr_processor_.get_aggr_used_size());
@@ -134,6 +176,7 @@ int ObScalarAggregateOp::inner_get_next_row()
     LOG_DEBUG("after inner_get_next_row",
               "hold_mem_size", aggr_processor_.get_aggr_hold_size(),
               "used_mem_size", aggr_processor_.get_aggr_used_size());
+    }
   }
   return ret;
 }

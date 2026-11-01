@@ -1030,6 +1030,7 @@ STORAGE_UNITY_GROUPS = [
             "src/storage/ddl/ob_ddl_vector_uniform_const.cpp",
             "src/storage/ddl/ob_ddl_vector_utils.cpp",
             "src/storage/fts/ob_fts_parser_helper.cpp",
+            "src/storage/fts/fts_token_cache.cpp",
             "src/storage/fts/ob_fts_parser_name.cpp",
             "src/storage/tx/ob_tx_ctx.cpp",
             "src/storage/tx/ob_tx_print_time_guard.cpp",

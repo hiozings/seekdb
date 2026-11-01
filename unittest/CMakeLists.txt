@@ -46,3 +46,11 @@ add_test(NAME test_ai_column_worker_state COMMAND test_ai_column_worker_state)
 set_tests_properties(test_ai_column_worker_state PROPERTIES LABELS competition)
 
 seekdb_competition_gtest(test_fts_hotpath storage/fts/test_fts_hotpath.cpp)
+
+add_executable(test_tokenize_result_cache EXCLUDE_FROM_ALL storage/fts/test_tokenize_result_cache.cpp)
+target_include_directories(test_tokenize_result_cache PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_compile_features(test_tokenize_result_cache PRIVATE cxx_std_17)
+target_compile_options(test_tokenize_result_cache PRIVATE -UNDEBUG)
+add_dependencies(competition_unit_tests test_tokenize_result_cache)
+add_test(NAME test_tokenize_result_cache COMMAND test_tokenize_result_cache)
+set_tests_properties(test_tokenize_result_cache PROPERTIES LABELS competition)

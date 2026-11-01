@@ -20,12 +20,661 @@
 #include "sql/das/iter/ob_das_text_retrieval_eval_node.h"
 #include "sql/das/iter/sparse_retrieval/ob_das_text_retrieval_engine.h"
 #include "sql/das/ob_das_ir_define.h"
+#include "sql/das/ob_fts_compact_registry.h"
+#include "storage/fts/ob_fts_compact_posting.h"
+#include "storage/tx_storage/ob_access_service.h"
+#include "storage/access/ob_table_scan_iterator.h"
+#include "storage/access/ob_table_param.h"
+#include "storage/access/ob_dml_param.h"
+#include "share/schema/ob_multi_version_schema_service.h"
+#include "config_bridge.h"
+#include <cstring>
+#include <cmath>
 
 namespace oceanbase
 {
 using namespace share;
 namespace sql
 {
+
+namespace
+{
+
+// Reader for one compact posting row (word -> 24-byte postings blob).
+class ObFtsCompactScanReader
+{
+public:
+  explicit ObFtsCompactScanReader(common::ObIAllocator &alloc)
+      : allocator_(alloc),
+        table_alloc_(lib::ObMemAttr("FtCompactTbl")),
+        table_param_(table_alloc_),
+        scan_allocator_(lib::ObMemAttr("FtCompactScan")),
+        iter_(nullptr),
+        table_id_(common::OB_INVALID_ID),
+        word_collation_(common::CS_TYPE_INVALID),
+        is_inited_(false)
+  {
+  }
+  ~ObFtsCompactScanReader() { reset(); }
+
+  void reset()
+  {
+    if (OB_NOT_NULL(iter_)) {
+      ::oceanbase::share::server_service<::oceanbase::storage::ObAccessService>()->revert_scan_iter(iter_);
+      iter_ = nullptr;
+    }
+    table_param_.reset();
+    scan_allocator_.reset();
+    is_inited_ = false;
+  }
+
+  int init(const ObFtsCompactEntry &entry, const transaction::ObTxReadSnapshot *snapshot)
+  {
+    int ret = common::OB_SUCCESS;
+    share::schema::ObSchemaGetterGuard guard;
+    const ObTableSchema *schema = nullptr;
+    common::ObSEArray<uint64_t, 4> column_ids;
+    if (OB_UNLIKELY(!entry.is_valid() || OB_ISNULL(snapshot))) {
+      ret = common::OB_INVALID_ARGUMENT;
+    } else if (OB_FAIL(share::schema::ObMultiVersionSchemaService::get_instance().get_runtime_schema_guard(guard))) {
+    } else if (OB_FAIL(guard.get_table_schema(entry.table_id_, schema))) {
+    } else if (OB_ISNULL(schema)) {
+      ret = common::OB_TABLE_NOT_EXIST;
+    } else if (OB_FAIL(schema->get_column_ids(column_ids))) {
+    } else if (OB_FAIL(table_param_.convert(*schema, column_ids, ObStoragePushdownFlag()))) {
+    } else if (OB_FAIL(scan_param_.column_ids_.assign(column_ids))) {
+    } else {
+      const ObColumnSchemaV2 *word_col = schema->get_column_schema(entry.word_col_id_);
+      if (OB_ISNULL(word_col)) {
+        ret = common::OB_ERR_UNEXPECTED;
+      } else if (FALSE_IT(word_collation_ = word_col->get_collation_type())) {
+      } else if (FALSE_IT(table_id_ = entry.table_id_)) {
+      } else {
+        ObQueryFlag query_flag(ObQueryFlag::Forward, false, false, false, false, false, false, false);
+        scan_param_.tablet_id_ = entry.tablet_id_;
+        scan_param_.schema_version_ = entry.schema_version_;
+        scan_param_.is_get_ = false;
+        scan_param_.scan_flag_.flag_ = query_flag.flag_;
+        scan_param_.key_ranges_.set_attr(common::ObMemAttr("FtCompactKR"));
+        scan_param_.index_id_ = 0;
+        scan_param_.timeout_ = THIS_WORKER.get_timeout_ts();
+        scan_param_.reserved_cell_count_ = scan_param_.column_ids_.count();
+        scan_param_.limit_param_.limit_ = -1;
+        scan_param_.limit_param_.offset_ = 0;
+        scan_param_.sql_mode_ = SMO_DEFAULT;
+        scan_param_.allocator_ = &allocator_;
+        scan_param_.for_update_ = false;
+        scan_param_.for_update_wait_timeout_ = scan_param_.timeout_;
+        scan_param_.scan_allocator_ = &scan_allocator_;
+        scan_param_.frozen_version_ = -1;
+        scan_param_.output_exprs_ = nullptr;
+        scan_param_.aggregate_exprs_ = nullptr;
+        scan_param_.op_ = nullptr;
+        scan_param_.row2exprs_projector_ = nullptr;
+        scan_param_.need_scn_ = false;
+        scan_param_.pd_storage_flag_ = false;
+        scan_param_.table_param_ = &table_param_;
+        if (OB_FAIL(scan_param_.snapshot_.assign(*snapshot))) {
+        } else {
+          scan_param_.tx_id_ = scan_param_.snapshot_.core_.tx_id_;
+          is_inited_ = true;
+        }
+      }
+    }
+    return ret;
+  }
+
+  int fetch(const common::ObString &token, common::ObString &docs)
+  {
+    int ret = common::OB_SUCCESS;
+    docs.reset();
+    if (OB_UNLIKELY(!is_inited_)) {
+      ret = common::OB_NOT_INIT;
+    } else if (OB_NOT_NULL(iter_)) {
+      if (OB_FAIL(::oceanbase::share::server_service<::oceanbase::storage::ObAccessService>()->revert_scan_iter(iter_))) {
+      } else {
+        iter_ = nullptr;
+      }
+    }
+    if (OB_SUCC(ret)) {
+      common::ObObj *objs = static_cast<common::ObObj *>(allocator_.alloc(sizeof(common::ObObj) * 2));
+      if (OB_ISNULL(objs)) {
+        ret = common::OB_ALLOCATE_MEMORY_FAILED;
+      } else {
+        objs[0].set_varchar(token);
+        objs[0].set_collation_type(word_collation_);
+        objs[1] = objs[0];
+        common::ObNewRange range;
+        range.table_id_ = table_id_;
+        range.start_key_ = common::ObRowkey(&objs[0], 1);
+        range.end_key_ = common::ObRowkey(&objs[1], 1);
+        range.border_flag_.set_inclusive_start();
+        range.border_flag_.set_inclusive_end();
+        if (OB_FAIL(scan_param_.key_ranges_.push_back(range))) {
+        } else if (OB_FAIL(::oceanbase::share::server_service<::oceanbase::storage::ObAccessService>()->table_scan(scan_param_, iter_))) {
+        } else {
+          ObTableScanIterator *scan_iter = static_cast<ObTableScanIterator *>(iter_);
+          blocksstable::ObDatumRow *row = nullptr;
+          if (OB_FAIL(scan_iter->get_next_row(row))) {
+            if (common::OB_ITER_END == ret) {
+              ret = common::OB_ENTRY_NOT_EXIST;
+            }
+          } else if (OB_ISNULL(row) || row->get_column_count() < 2) {
+            ret = common::OB_ERR_UNEXPECTED;
+          } else {
+            docs = row->storage_datums_[1].get_string();
+          }
+        }
+        scan_param_.key_ranges_.reuse();
+      }
+    }
+    return ret;
+  }
+
+  int fetch_multi(const common::ObIArray<common::ObString> &tokens,
+                  common::ObIArray<common::ObString> &docs)
+  {
+    int ret = common::OB_SUCCESS;
+    docs.reuse();
+    if (OB_UNLIKELY(!is_inited_)) {
+      ret = common::OB_NOT_INIT;
+    } else if (OB_NOT_NULL(iter_)) {
+      if (OB_FAIL(::oceanbase::share::server_service<::oceanbase::storage::ObAccessService>()->revert_scan_iter(iter_))) {
+      } else {
+        iter_ = nullptr;
+      }
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && i < tokens.count(); ++i) {
+      if (OB_FAIL(docs.push_back(common::ObString()))) {
+      }
+    }
+    if (OB_SUCC(ret)) {
+      scan_param_.key_ranges_.reuse();
+      for (int64_t i = 0; OB_SUCC(ret) && i < tokens.count(); ++i) {
+        common::ObObj *objs = static_cast<common::ObObj *>(allocator_.alloc(sizeof(common::ObObj) * 2));
+        if (OB_ISNULL(objs)) {
+          ret = common::OB_ALLOCATE_MEMORY_FAILED;
+        } else {
+          objs[0].set_varchar(tokens.at(i));
+          objs[0].set_collation_type(word_collation_);
+          objs[1] = objs[0];
+          common::ObNewRange range;
+          range.table_id_ = table_id_;
+          range.start_key_ = common::ObRowkey(&objs[0], 1);
+          range.end_key_ = common::ObRowkey(&objs[1], 1);
+          range.border_flag_.set_inclusive_start();
+          range.border_flag_.set_inclusive_end();
+          ret = scan_param_.key_ranges_.push_back(range);
+        }
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_FAIL(::oceanbase::share::server_service<::oceanbase::storage::ObAccessService>()->table_scan(scan_param_, iter_))) {
+      } else {
+        ObTableScanIterator *scan_iter = static_cast<ObTableScanIterator *>(iter_);
+        blocksstable::ObDatumRow *row = nullptr;
+        while (OB_SUCC(ret)) {
+          ret = scan_iter->get_next_row(row);
+          if (common::OB_ITER_END == ret) {
+            ret = common::OB_SUCCESS;
+            break;
+          } else if (OB_FAIL(ret)) {
+          } else if (OB_ISNULL(row) || row->get_column_count() < 2) {
+            ret = common::OB_ERR_UNEXPECTED;
+          } else {
+            const common::ObString word = row->storage_datums_[0].get_string();
+            for (int64_t i = 0; i < tokens.count(); ++i) {
+              if (word.length() == tokens.at(i).length()
+                  && 0 == memcmp(word.ptr(), tokens.at(i).ptr(), word.length())) {
+                common::ObString copied;
+                if (OB_FAIL(common::ob_write_string(allocator_, row->storage_datums_[1].get_string(), copied))) {
+                } else {
+                  docs.at(i) = copied;
+                }
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+    if (OB_NOT_NULL(iter_)) {
+      int tmp_ret = ::oceanbase::share::server_service<::oceanbase::storage::ObAccessService>()->revert_scan_iter(iter_);
+      if (common::OB_SUCCESS != tmp_ret && common::OB_SUCCESS == ret) {
+        ret = tmp_ret;
+      }
+      iter_ = nullptr;
+    }
+    scan_param_.key_ranges_.reuse();
+    return ret;
+  }
+
+private:
+  common::ObIAllocator &allocator_;
+  common::ObArenaAllocator table_alloc_;
+  share::schema::ObTableParam table_param_;
+  common::ObArenaAllocator scan_allocator_;
+  storage::ObTableScanParam scan_param_;
+  common::ObNewRowIterator *iter_;
+  uint64_t table_id_;
+  common::ObCollationType word_collation_;
+  bool is_inited_;
+};
+
+// One compact dimension iterator: yields decoded postings for a query token.
+class ObFtsCompactDimIter final : public ObISRDaaTDimIter
+{
+public:
+  explicit ObFtsCompactDimIter(common::ObIAllocator &alloc)
+      : alloc_(alloc), postings_(), pos_(0), score_(1.0), reader_(alloc),
+        total_doc_cnt_(0), avg_doc_len_(0.0)
+  {
+  }
+  ~ObFtsCompactDimIter() override = default;
+
+  int init(const ObFtsCompactEntry &entry,
+           const common::ObString &token,
+           const transaction::ObTxReadSnapshot *snapshot)
+  {
+    int ret = common::OB_SUCCESS;
+    common::ObString docs;
+    total_doc_cnt_ = entry.total_doc_cnt_;
+    avg_doc_len_ = entry.avg_doc_len_;
+    if (OB_FAIL(reader_.init(entry, snapshot))) {
+    } else if (OB_FAIL(reader_.fetch(token, docs))) {
+      if (common::OB_ENTRY_NOT_EXIST == ret) {
+        ret = common::OB_SUCCESS;
+      }
+    } else if (OB_FAIL(storage::ObFtsCompactPostingCodec::decode(docs, postings_))) {
+    }
+    return ret;
+  }
+
+  int init_from_docs(const ObFtsCompactEntry &entry, const common::ObString &docs)
+  {
+    int ret = common::OB_SUCCESS;
+    total_doc_cnt_ = entry.total_doc_cnt_;
+    avg_doc_len_ = entry.avg_doc_len_;
+    if (!docs.empty() && OB_FAIL(storage::ObFtsCompactPostingCodec::decode(docs, postings_))) {
+    }
+    return ret;
+  }
+
+  int get_next_row() override
+  {
+    int ret = common::OB_SUCCESS;
+    if (pos_ >= postings_.count()) {
+      ret = common::OB_ITER_END;
+    } else {
+      cur_id_.set_string(reinterpret_cast<const char *>(postings_.at(pos_).doc_id_),
+                         storage::ObFtsCompactPosting::DOC_ID_SIZE);
+      score_ = score_at(pos_);
+      ++pos_;
+    }
+    return ret;
+  }
+
+  int get_next_batch(const int64_t capacity, int64_t &count) override
+  {
+    int ret = common::OB_SUCCESS;
+    count = 0;
+    while (OB_SUCC(ret) && count < capacity) {
+      if (OB_FAIL(get_next_row())) {
+        if (common::OB_ITER_END == ret) {
+          ret = common::OB_SUCCESS;
+        }
+      } else {
+        ++count;
+      }
+    }
+    return ret;
+  }
+
+  int advance_to(const common::ObDatum &id_datum) override
+  {
+    int ret = common::OB_SUCCESS;
+    const common::ObString id = id_datum.get_string();
+    if (OB_UNLIKELY(storage::ObFtsCompactPosting::DOC_ID_SIZE != id.length())) {
+      ret = common::OB_INVALID_ARGUMENT;
+    } else {
+      int64_t lo = 0;
+      int64_t hi = postings_.count();
+      while (lo < hi) {
+        const int64_t mid = (lo + hi) / 2;
+        if (0 > memcmp(postings_.at(mid).doc_id_, id.ptr(), storage::ObFtsCompactPosting::DOC_ID_SIZE)) {
+          lo = mid + 1;
+        } else {
+          hi = mid;
+        }
+      }
+      pos_ = lo;
+      if (pos_ < postings_.count()) {
+        score_ = score_at(pos_);
+      }
+    }
+    return ret;
+  }
+
+  int get_curr_score(double &score) const override
+  {
+    score = score_;
+    return common::OB_SUCCESS;
+  }
+
+  int get_curr_id(const common::ObDatum *&id_datum) const override
+  {
+    int ret = common::OB_SUCCESS;
+    if (pos_ == 0 || pos_ > postings_.count()) {
+      ret = common::OB_ARRAY_OUT_OF_RANGE;
+    } else {
+      id_datum = &cur_id_;
+    }
+    return ret;
+  }
+
+  int get_dim_max_score(double &score) override
+  {
+    score = score_;
+    return common::OB_SUCCESS;
+  }
+
+  const common::ObSEArray<storage::ObFtsCompactPosting, 64> &get_postings() const { return postings_; }
+
+  double score_at(const int64_t idx) const
+  {
+    double score = 0.0;
+    if (idx >= 0 && idx < postings_.count()) {
+      const storage::ObFtsCompactPosting &p = postings_.at(idx);
+      const double df = static_cast<double>(postings_.count());
+      const double total = static_cast<double>(total_doc_cnt_ > 0 ? total_doc_cnt_ : 1);
+      const double diff = (total - df) > 0 ? (total - df) : 0;
+      const double idf = std::log((diff + 0.5) / (df + 0.5));
+      const double token_weight = (idf > 0.25 ? idf : 0.25) * 2.2;
+      const double avg = avg_doc_len_ > 0.0 ? avg_doc_len_ : 10.0;
+      const double norm = static_cast<double>(p.doc_len_) / avg;
+      const double doc_weight = static_cast<double>(p.tf_)
+          / (static_cast<double>(p.tf_) + 1.2 * (1.0 - 0.75 + 0.75 * norm));
+      score = token_weight * doc_weight;
+    }
+    return score;
+  }
+
+  void reuse() override { pos_ = 0; }
+  void reset() override
+  {
+    postings_.reuse();
+    pos_ = 0;
+    reader_.reset();
+  }
+
+private:
+  common::ObIAllocator &alloc_;
+  common::ObSEArray<storage::ObFtsCompactPosting, 64> postings_;
+  int64_t pos_;
+  double score_;
+  common::ObDatum cur_id_;
+  ObFtsCompactScanReader reader_;
+  int64_t total_doc_cnt_;
+  double avg_doc_len_;
+};
+
+struct ObFtsCompactResult
+{
+  uint8_t doc_id_[storage::ObFtsCompactPosting::DOC_ID_SIZE];
+  double score_;
+};
+
+// Bulk merge for compact postings: precomputes the full match set once and
+// then projects it in batches, avoiding the generic row-wise DAAT heap.
+class ObFtsCompactMergeIter final : public storage::ObISparseRetrievalMergeIter
+{
+public:
+  explicit ObFtsCompactMergeIter(common::ObIAllocator &alloc)
+      : alloc_(alloc), results_(), pos_(0), prepared_(false), param_(nullptr),
+        dim_iters_(nullptr), should_match_(1), score_(1.0), skip_projection_(false),
+        count_only_count_(0)
+  {
+  }
+  ~ObFtsCompactMergeIter() override = default;
+
+  int init(const ObSparseRetrievalMergeParam *param,
+           const common::ObIArray<ObISRDaaTDimIter *> *dim_iters,
+           const int64_t should_match)
+  {
+    int ret = common::OB_SUCCESS;
+    if (OB_ISNULL(param) || OB_ISNULL(dim_iters)) {
+      ret = common::OB_INVALID_ARGUMENT;
+    } else {
+      param_ = param;
+      dim_iters_ = dim_iters;
+      should_match_ = should_match > 0 ? should_match : 1;
+    }
+    return ret;
+  }
+
+  int get_next_row() override
+  {
+    int ret = common::OB_SUCCESS;
+    int64_t count = 0;
+    if (OB_FAIL(prepare())) {
+    } else if (pos_ >= results_.count()) {
+      ret = common::OB_ITER_END;
+    } else if (OB_FAIL(project(1, count))) {
+    } else {
+      ++pos_;
+    }
+    return ret;
+  }
+
+  int get_next_rows(const int64_t capacity, int64_t &count) override
+  {
+    int ret = common::OB_SUCCESS;
+    count = 0;
+    if (OB_FAIL(prepare())) {
+    } else {
+      const int64_t remain = results_.count() - pos_;
+      const int64_t batch = MIN(capacity, remain);
+      if (batch <= 0) {
+        ret = common::OB_ITER_END;
+      } else if (OB_FAIL(project(batch, count))) {
+      } else {
+        pos_ += count;
+      }
+    }
+    return ret;
+  }
+
+  void reuse(const bool switch_tablet = false) override
+  {
+    UNUSED(switch_tablet);
+    pos_ = 0;
+  }
+  void reset() override
+  {
+    results_.reuse();
+    pos_ = 0;
+    prepared_ = false;
+  }
+  void set_skip_projection(const bool v) { skip_projection_ = v; }
+
+  int get_match_count(int64_t &count)
+  {
+    int ret = common::OB_SUCCESS;
+    count = 0;
+    if (prepared_) {
+      count = results_.count();
+    } else if (OB_FAIL(prepare(true))) {
+    } else {
+      count = count_only_count_;
+    }
+    return ret;
+  }
+
+  int get_query_max_score(double &score) override
+  {
+    int ret = common::OB_SUCCESS;
+    if (OB_FAIL(prepare())) {
+    } else {
+      score = results_.empty() ? 0.0 : results_.at(0).score_;
+    }
+    return ret;
+  }
+
+private:
+  int prepare(const bool count_only = false)
+  {
+    int ret = common::OB_SUCCESS;
+    if (prepared_) {
+    } else if (OB_ISNULL(param_) || OB_ISNULL(param_->eval_ctx_) || OB_ISNULL(param_->id_proj_expr_)) {
+      ret = common::OB_ERR_UNEXPECTED;
+    } else {
+      if (count_only) {
+        count_only_count_ = 0;
+      }
+      const int64_t dim_cnt = dim_iters_->count();
+      common::ObSEArray<int64_t, 8> positions;
+      common::ObSEArray<int64_t, 8> counts;
+      common::ObSEArray<common::ObString, 8> current;
+      for (int64_t i = 0; OB_SUCC(ret) && i < dim_cnt; ++i) {
+        const ObFtsCompactDimIter *dim = static_cast<const ObFtsCompactDimIter *>(dim_iters_->at(i));
+        const auto &postings = dim->get_postings();
+        if (OB_FAIL(positions.push_back(0)) || OB_FAIL(counts.push_back(postings.count()))
+            || OB_FAIL(current.push_back(common::ObString()))) {
+        } else if (!postings.empty()) {
+          current.at(i).assign_ptr(reinterpret_cast<const char *>(postings.at(0).doc_id_),
+                                   storage::ObFtsCompactPosting::DOC_ID_SIZE);
+        }
+      }
+      while (OB_SUCC(ret)) {
+        const char *min_id = nullptr;
+        for (int64_t i = 0; i < dim_cnt; ++i) {
+          if (positions.at(i) < counts.at(i)
+              && (nullptr == min_id || 0 > memcmp(current.at(i).ptr(), min_id,
+                                                  storage::ObFtsCompactPosting::DOC_ID_SIZE))) {
+            min_id = current.at(i).ptr();
+          }
+        }
+        if (nullptr == min_id) {
+          break;
+        }
+        int64_t matched = 0;
+        double total_score = 0.0;
+        for (int64_t i = 0; i < dim_cnt; ++i) {
+          if (positions.at(i) < counts.at(i)
+              && 0 == memcmp(current.at(i).ptr(), min_id,
+                             storage::ObFtsCompactPosting::DOC_ID_SIZE)) {
+            ++matched;
+            if (!count_only) {
+              total_score += static_cast<const ObFtsCompactDimIter *>(dim_iters_->at(i))->score_at(positions.at(i));
+            }
+            ++positions.at(i);
+            if (positions.at(i) < counts.at(i)) {
+              const ObFtsCompactDimIter *dim = static_cast<const ObFtsCompactDimIter *>(dim_iters_->at(i));
+              const auto &postings = dim->get_postings();
+              current.at(i).assign_ptr(reinterpret_cast<const char *>(postings.at(positions.at(i)).doc_id_),
+                                       storage::ObFtsCompactPosting::DOC_ID_SIZE);
+            }
+          }
+        }
+        if (matched >= should_match_) {
+          if (count_only) {
+            ++count_only_count_;
+          } else {
+            ObFtsCompactResult result;
+            MEMCPY(result.doc_id_, min_id, storage::ObFtsCompactPosting::DOC_ID_SIZE);
+            result.score_ = total_score;
+            if (OB_FAIL(results_.push_back(result))) {
+            }
+          }
+        }
+      }
+      if (OB_SUCC(ret) && !count_only && param_->topk_limit_ > 0 && results_.count() > param_->topk_limit_) {
+        std::sort(results_.begin(), results_.end(),
+                  [](const ObFtsCompactResult &a, const ObFtsCompactResult &b) {
+                    if (a.score_ != b.score_) {
+                      return a.score_ > b.score_;
+                    }
+                    return 0 > memcmp(a.doc_id_, b.doc_id_, storage::ObFtsCompactPosting::DOC_ID_SIZE);
+                  });
+        while (results_.count() > param_->topk_limit_) {
+          results_.pop_back();
+        }
+      }
+      if (OB_SUCC(ret) && !count_only) {
+        prepared_ = true;
+        pos_ = 0;
+      }
+    }
+    return ret;
+  }
+
+  int project(const int64_t count, int64_t &projected)
+  {
+    int ret = common::OB_SUCCESS;
+    projected = 0;
+    ObEvalCtx *eval_ctx = param_->eval_ctx_;
+    ObExpr *id_expr = param_->id_proj_expr_;
+    if (OB_UNLIKELY(count <= 0 || pos_ + count > results_.count())) {
+      ret = common::OB_INVALID_ARGUMENT;
+    } else if (skip_projection_) {
+      projected = count;
+    } else if (eval_ctx->is_vectorized()) {
+      ObEvalCtx::BatchInfoScopeGuard guard(*eval_ctx);
+      sql::ObBitVector &id_flags = id_expr->get_evaluated_flags(*eval_ctx);
+      ObExpr *relevance_expr = param_->relevance_proj_expr_;
+      sql::ObBitVector *relevance_flags = nullptr;
+      if (OB_NOT_NULL(relevance_expr)) {
+        relevance_flags = &relevance_expr->get_evaluated_flags(*eval_ctx);
+      }
+      for (int64_t i = 0; OB_SUCC(ret) && i < count; ++i) {
+        const ObFtsCompactResult &result = results_.at(pos_ + i);
+        guard.set_batch_idx(i);
+        ObDatum &id_datum = id_expr->locate_datum_for_write(*eval_ctx);
+        id_datum.set_string(reinterpret_cast<const char *>(result.doc_id_),
+                            storage::ObFtsCompactPosting::DOC_ID_SIZE);
+        id_flags.set(i);
+        id_expr->set_evaluated_projected(*eval_ctx);
+        if (OB_NOT_NULL(relevance_expr)) {
+          ObDatum &relevance_datum = relevance_expr->locate_datum_for_write(*eval_ctx);
+          relevance_datum.set_double(result.score_);
+          relevance_flags->set(i);
+          relevance_expr->set_evaluated_projected(*eval_ctx);
+        }
+      }
+      projected = count;
+    } else if (1 == count) {
+      ObEvalCtx::BatchInfoScopeGuard guard(*eval_ctx);
+      guard.set_batch_idx(0);
+      ObDatum &id_datum = id_expr->locate_datum_for_write(*eval_ctx);
+      id_datum.set_string(reinterpret_cast<const char *>(results_.at(pos_).doc_id_),
+                          storage::ObFtsCompactPosting::DOC_ID_SIZE);
+      id_expr->set_evaluated_projected(*eval_ctx);
+      if (OB_NOT_NULL(param_->relevance_proj_expr_)) {
+        ObDatum &relevance_datum = param_->relevance_proj_expr_->locate_datum_for_write(*eval_ctx);
+        relevance_datum.set_double(results_.at(pos_).score_);
+        param_->relevance_proj_expr_->set_evaluated_projected(*eval_ctx);
+      }
+      projected = 1;
+    } else {
+      ret = common::OB_ERR_UNEXPECTED;
+    }
+    return ret;
+  }
+
+private:
+  common::ObIAllocator &alloc_;
+  common::ObSEArray<ObFtsCompactResult, 512> results_;
+  int64_t pos_;
+  bool prepared_;
+  const ObSparseRetrievalMergeParam *param_;
+  const common::ObIArray<ObISRDaaTDimIter *> *dim_iters_;
+  int64_t should_match_;
+  double score_;
+  bool skip_projection_;
+  int64_t count_only_count_;
+};
+
+} // namespace
 
 ObDASLegacyTRMergeIter::ObDASLegacyTRMergeIter()
   : ObDASIter(ObDASIterType::DAS_ITER_TEXT_RETRIEVAL_MERGE),
@@ -55,6 +704,9 @@ ObDASLegacyTRMergeIter::ObDASLegacyTRMergeIter()
     flags_(0),
     check_rangekey_inited_(false),
     inv_idx_tablet_switched_(false),
+    use_compact_fts_(false),
+    skip_projection_(false),
+    compact_entry_(),
     is_inited_(false)
 {
 }
@@ -87,6 +739,13 @@ int ObDASLegacyTRMergeIter::inner_init(ObDASIterParam &param)
     if (OB_FAIL(ret)) {
     } else if (OB_ISNULL(ir_ctdef_) || OB_ISNULL(ir_rtdef_)) {
       ret = OB_ERR_UNEXPECTED;
+    } else if (daat_mode_ && !topk_mode_ && !function_lookup_mode_
+               && config::_enable_fts_posting_index()
+               && OB_NOT_NULL(ir_ctdef_->get_inv_idx_scan_ctdef())) {
+      use_compact_fts_ = ObFtsCompactRegistry::instance().get(
+          ir_ctdef_->get_inv_idx_scan_ctdef()->ref_table_id_, compact_entry_);
+    }
+    if (OB_FAIL(ret)) {
     } else if (topk_mode_ && OB_FAIL(init_topk_limit())) {
     } else if (OB_ISNULL(mem_context_)) {
       lib::ContextParam mem_param;
@@ -101,11 +760,31 @@ int ObDASLegacyTRMergeIter::inner_init(ObDASIterParam &param)
   return ret;
 }
 
+int ObDASLegacyTRMergeIter::get_match_count(int64_t &count)
+{
+  int ret = OB_SUCCESS;
+  count = 0;
+  if (!use_compact_fts_) {
+    ret = OB_NOT_SUPPORTED;
+  } else if (OB_ISNULL(sparse_retrieval_iter_)) {
+    if (dim_iters_.empty() && OB_FAIL(create_dim_iters())) {
+    } else if (OB_FAIL(create_sparse_retrieval_iter())) {
+    } else {
+      check_rangekey_inited_ = true;
+    }
+  }
+  if (OB_SUCC(ret)) {
+    ObFtsCompactMergeIter *compact_iter = static_cast<ObFtsCompactMergeIter *>(sparse_retrieval_iter_);
+    ret = compact_iter->get_match_count(count);
+  }
+  return ret;
+}
+
 int ObDASLegacyTRMergeIter::init_das_iter_scan_params()
 {
   int ret = OB_SUCCESS;
   const int64_t dim_iter_cnt = taat_mode_ ? 1 : query_tokens_.count();
-  if (!ir_ctdef_->need_estimate_total_doc_cnt() && 0 != dim_iter_cnt) {
+  if (ir_ctdef_->need_calc_relevance() && !ir_ctdef_->need_estimate_total_doc_cnt() && 0 != dim_iter_cnt) {
     void *buf = nullptr;
     if (OB_ISNULL(buf = myself_allocator_.alloc(sizeof(ObTableScanParam)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -300,7 +979,23 @@ int ObDASLegacyTRMergeIter::init_das_iter_scan_param(const ObTabletID &tablet_id
 int ObDASLegacyTRMergeIter::create_dim_iters()
 {
   int ret = OB_SUCCESS;
-  if (topk_mode_) {
+  if (use_compact_fts_) {
+    ObFtsCompactScanReader reader(myself_allocator_);
+    common::ObSEArray<common::ObString, 4> docs;
+    if (OB_FAIL(reader.init(compact_entry_, snapshot_))) {
+    } else if (OB_FAIL(reader.fetch_multi(query_tokens_, docs))) {
+    } else {
+      for (int64_t i = 0; OB_SUCC(ret) && i < query_tokens_.count(); ++i) {
+        ObFtsCompactDimIter *compact_iter = nullptr;
+        if (OB_ISNULL(compact_iter = OB_NEWx(ObFtsCompactDimIter, &myself_allocator_,
+                                              myself_allocator_))) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+        } else if (OB_FAIL(compact_iter->init_from_docs(compact_entry_, docs.at(i)))) {
+        } else if (OB_FAIL(dim_iters_.push_back(compact_iter))) {
+        }
+      }
+    }
+  } else if (topk_mode_) {
     if (OB_FAIL(init_block_max_iter_param())) {
     }
     for (int64_t i = 0; OB_SUCC(ret) && i < query_tokens_.count(); ++i) {
@@ -382,6 +1077,7 @@ int ObDASLegacyTRMergeIter::create_sparse_retrieval_iter()
   sr_iter_param_.relevance_proj_expr_ = ir_ctdef_->relevance_proj_col_;
   sr_iter_param_.filter_expr_ = ir_ctdef_->match_filter_;
   sr_iter_param_.topk_limit_ = topk_limit_;
+  sr_iter_param_.skip_bm25_estimation_ = use_compact_fts_;
   if (OB_NOT_NULL(ir_ctdef_->field_boost_expr_)) {
     ObDatum *boost_datum = nullptr;
     if (OB_FAIL(ir_ctdef_->field_boost_expr_->eval(*ir_rtdef_->eval_ctx_, boost_datum))) {
@@ -408,6 +1104,17 @@ int ObDASLegacyTRMergeIter::create_sparse_retrieval_iter()
     }
   }
   if (OB_FAIL(ret)) {
+  } else if (use_compact_fts_) {
+    ObFtsCompactMergeIter *compact_iter = nullptr;
+    if (OB_ISNULL(compact_iter = OB_NEWx(ObFtsCompactMergeIter, &myself_allocator_,
+                                          myself_allocator_))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else if (OB_FAIL(compact_iter->init(&sr_iter_param_, &dim_iters_,
+                                          ir_rtdef_->minimum_should_match_))) {
+    } else {
+      compact_iter->set_skip_projection(skip_projection_);
+      sparse_retrieval_iter_ = compact_iter;
+    }
   } else if (topk_mode_) {
     ObTextDaaTParam iter_param;
     ObTextBMWIter *bmw_iter = nullptr;
@@ -473,24 +1180,32 @@ int ObDASLegacyTRMergeIter::init_daat_iter_param(ObTextDaaTParam &iter_param)
   iter_param.allocator_ = &myself_allocator_;
   iter_param.mode_flag_ = ir_ctdef_->mode_flag_;
   iter_param.function_lookup_mode_ = function_lookup_mode_;
-  iter_param.bm25_param_est_ctx_.total_doc_cnt_expr_
-      = ir_ctdef_->get_doc_agg_ctdef()->pd_expr_spec_.pd_storage_aggregate_output_.at(0);
-  iter_param.bm25_param_est_ctx_.estimated_total_doc_cnt_ = ir_ctdef_->estimated_total_doc_cnt_;
-  iter_param.bm25_param_est_ctx_.need_est_avg_doc_token_cnt_ = ir_ctdef_->need_avg_doc_len_est();
-  iter_param.bm25_param_est_ctx_.can_est_by_sum_skip_index_ = ir_ctdef_->avg_doc_len_est_spec_.can_est_by_sum_skip_index_;
-  iter_param.bm25_param_est_ctx_.avg_doc_token_cnt_expr_ = ir_ctdef_->avg_doc_token_cnt_expr_;
-  iter_param.bm25_param_est_ctx_.doc_length_est_param_ = &doc_length_est_param_;
-  if (query_tokens_.count() == 0) {
-    // do nothing
-  } else if (OB_ISNULL(iter_param.bm25_param_est_ctx_.total_doc_cnt_expr_)) {
-    ret = OB_ERR_UNEXPECTED;
-  } else if (OB_FAIL(init_doc_length_est_param())) {
-  } else if (!ir_ctdef_->need_estimate_total_doc_cnt()) {
-    if (OB_UNLIKELY(!static_cast<sql::ObStoragePushdownFlag>(total_doc_cnt_scan_param_->pd_storage_flag_).is_aggregate_pushdown())) {
-      ret = OB_NOT_IMPLEMENT;
-      LOG_ERROR("aggregate without pushdown not implemented", K(ret));
-    } else {
-      iter_param.bm25_param_est_ctx_.total_doc_cnt_iter_ = static_cast<sql::ObDASScanIter*>(children_[children_cnt_ - 1]);
+  iter_param.minimum_should_match_ = ir_rtdef_->minimum_should_match_;
+  if (use_compact_fts_) {
+    iter_param.bm25_param_est_ctx_.estimated_total_doc_cnt_ = 1;
+    iter_param.bm25_param_est_ctx_.need_est_avg_doc_token_cnt_ = false;
+    iter_param.bm25_param_est_ctx_.can_est_by_sum_skip_index_ = false;
+    iter_param.bm25_param_est_ctx_.doc_length_est_param_ = &doc_length_est_param_;
+  } else if (ir_ctdef_->need_calc_relevance()) {
+    iter_param.bm25_param_est_ctx_.total_doc_cnt_expr_
+        = ir_ctdef_->get_doc_agg_ctdef()->pd_expr_spec_.pd_storage_aggregate_output_.at(0);
+    iter_param.bm25_param_est_ctx_.estimated_total_doc_cnt_ = ir_ctdef_->estimated_total_doc_cnt_;
+    iter_param.bm25_param_est_ctx_.need_est_avg_doc_token_cnt_ = ir_ctdef_->need_avg_doc_len_est();
+    iter_param.bm25_param_est_ctx_.can_est_by_sum_skip_index_ = ir_ctdef_->avg_doc_len_est_spec_.can_est_by_sum_skip_index_;
+    iter_param.bm25_param_est_ctx_.avg_doc_token_cnt_expr_ = ir_ctdef_->avg_doc_token_cnt_expr_;
+    iter_param.bm25_param_est_ctx_.doc_length_est_param_ = &doc_length_est_param_;
+    if (query_tokens_.count() == 0) {
+      // do nothing
+    } else if (OB_ISNULL(iter_param.bm25_param_est_ctx_.total_doc_cnt_expr_)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(init_doc_length_est_param())) {
+    } else if (!ir_ctdef_->need_estimate_total_doc_cnt()) {
+      if (OB_UNLIKELY(!static_cast<sql::ObStoragePushdownFlag>(total_doc_cnt_scan_param_->pd_storage_flag_).is_aggregate_pushdown())) {
+        ret = OB_NOT_IMPLEMENT;
+        LOG_ERROR("aggregate without pushdown not implemented", K(ret));
+      } else {
+        iter_param.bm25_param_est_ctx_.total_doc_cnt_iter_ = static_cast<sql::ObDASScanIter*>(children_[children_cnt_ - 1]);
+      }
     }
   }
   if (OB_SUCC(ret)) {
@@ -524,15 +1239,19 @@ int ObDASLegacyTRMergeIter::init_taat_iter_param(ObTextTaaTParam &iter_param)
   iter_param.allocator_ = &myself_allocator_;
   iter_param.mode_flag_ = ir_ctdef_->mode_flag_;
   iter_param.function_lookup_mode_ = function_lookup_mode_;
-  iter_param.bm25_param_est_ctx_.total_doc_cnt_expr_
-      = ir_ctdef_->get_doc_agg_ctdef()->pd_expr_spec_.pd_storage_aggregate_output_.at(0);
-  iter_param.bm25_param_est_ctx_.estimated_total_doc_cnt_ = ir_ctdef_->estimated_total_doc_cnt_;
-  iter_param.bm25_param_est_ctx_.need_est_avg_doc_token_cnt_ = ir_ctdef_->need_avg_doc_len_est();
-  iter_param.bm25_param_est_ctx_.can_est_by_sum_skip_index_ = ir_ctdef_->avg_doc_len_est_spec_.can_est_by_sum_skip_index_;
-  iter_param.bm25_param_est_ctx_.avg_doc_token_cnt_expr_ = ir_ctdef_->avg_doc_token_cnt_expr_;
-  iter_param.bm25_param_est_ctx_.doc_length_est_param_ = &doc_length_est_param_;
+  if (ir_ctdef_->need_calc_relevance()) {
+    iter_param.bm25_param_est_ctx_.total_doc_cnt_expr_
+        = ir_ctdef_->get_doc_agg_ctdef()->pd_expr_spec_.pd_storage_aggregate_output_.at(0);
+    iter_param.bm25_param_est_ctx_.estimated_total_doc_cnt_ = ir_ctdef_->estimated_total_doc_cnt_;
+    iter_param.bm25_param_est_ctx_.need_est_avg_doc_token_cnt_ = ir_ctdef_->need_avg_doc_len_est();
+    iter_param.bm25_param_est_ctx_.can_est_by_sum_skip_index_ = ir_ctdef_->avg_doc_len_est_spec_.can_est_by_sum_skip_index_;
+    iter_param.bm25_param_est_ctx_.avg_doc_token_cnt_expr_ = ir_ctdef_->avg_doc_token_cnt_expr_;
+    iter_param.bm25_param_est_ctx_.doc_length_est_param_ = &doc_length_est_param_;
+  }
   if (OB_ISNULL(iter_param.dim_iter_ = dim_iter_)) {
     ret = OB_ERR_UNEXPECTED;
+  } else if (!ir_ctdef_->need_calc_relevance()) {
+    // Membership queries need neither corpus statistics nor BM25.
   } else if (OB_ISNULL(iter_param.bm25_param_est_ctx_.total_doc_cnt_expr_)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(init_doc_length_est_param())) {
@@ -700,6 +1419,12 @@ int ObDASLegacyTRMergeIter::do_table_scan()
   int ret = OB_SUCCESS;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
+  } else if (use_compact_fts_) {
+    if (OB_FAIL(create_dim_iters())) {
+    } else if (OB_FAIL(create_sparse_retrieval_iter())) {
+    } else {
+      check_rangekey_inited_ = true;
+    }
   } else {
     if (function_lookup_mode_) {
       // skip the following, which should have been done
@@ -783,6 +1508,8 @@ int ObDASLegacyTRMergeIter::rescan()
     ret = OB_NOT_INIT;
   } else if (OB_ISNULL(sparse_retrieval_iter_)) {
     ret = OB_ERR_UNEXPECTED;
+  } else if (use_compact_fts_) {
+    sparse_retrieval_iter_->reuse(false);
   } else if (!function_lookup_mode_ && OB_FAIL(set_children_iter_rangekey())) {
   } else if (OB_UNLIKELY(!check_rangekey_inited_)) {
     ret = OB_ERR_UNEXPECTED;
@@ -1111,7 +1838,7 @@ int ObDASLegacyTRMergeIter::build_query_tokens(const ObDASIRScanCtDef *ir_ctdef,
     int64_t doc_length = 0;
     storage::ObFTParseHelper tokenize_helper;
     common::ObSEArray<ObFTWord, 16> tokens;
-    hash::ObHashMap<ObFTWord, int64_t> token_map;
+    storage::ObFTWordMap token_map;
     const int64_t ft_word_bkt_cnt = MAX(search_text_string.length() / 10, 2);
     if (OB_FAIL(tokenize_helper.init(&alloc, parser_name, parser_properties))) {
     } else if (OB_FAIL(token_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
@@ -1122,7 +1849,7 @@ int ObDASLegacyTRMergeIter::build_query_tokens(const ObDASIRScanCtDef *ir_ctdef,
                            doc_length,
                            token_map))) {
     } else {
-      for (hash::ObHashMap<ObFTWord, int64_t>::const_iterator iter = token_map.begin();
+      for (storage::ObFTWordMap::const_iterator iter = token_map.begin();
           OB_SUCC(ret) && iter != token_map.end();
           ++iter) {
         const ObFTWord &token = iter->first;

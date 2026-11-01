@@ -51,7 +51,8 @@ private:
   ObObjMeta meta_;
 };
 
-typedef common::hash::ObHashMap<ObFTWord, int64_t> ObFTWordMap;
+// Each segmentation/query owns its word map; it is never shared by workers.
+typedef common::hash::ObHashMap<ObFTWord, int64_t, common::hash::NoPthreadDefendMode> ObFTWordMap;
 
 class ObAddWordFlag final
 {

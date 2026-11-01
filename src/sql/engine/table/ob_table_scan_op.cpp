@@ -19,6 +19,8 @@
 
 
 #include "ob_table_scan_op.h"
+#include "sql/das/ob_fts_compact_collector.h"
+#include "config_bridge.h"
 #include "common/json_type/ob_json_bin.h"
 #include "data_plane/blocksstable/ob_datum_row.h"
 #include "sql/engine/ob_physical_plan.h"
@@ -1503,6 +1505,9 @@ int ObTableScanOp::inner_open()
                                                                    iter_tree_))) {
   }
   output_ = iter_tree_;
+  if (OB_SUCC(ret) && MY_SPEC.output_.empty() && OB_NOT_NULL(iter_tree_)) {
+    iter_tree_->set_skip_projection();
+  }
   if (OB_SUCC(ret) && OB_FAIL(rand_scan_processor_.init(&spec, this))) {
   }
   return ret;
@@ -3646,6 +3651,21 @@ int ObTableScanOp::inner_get_next_fts_index_row()
     }
   }
   if (FAILEDx(fill_generated_fts_cols(row))) {
+  } else if (OB_NOT_NULL(row) && MY_SPEC.is_fts_index_aux_
+             && config::_enable_fts_posting_index()) {
+    const uint64_t build_id = MY_SPEC.plan_->get_ddl_task_id();
+    ObDatum &word_datum = row->storage_datums_[0];
+    ObDatum &doc_datum = row->storage_datums_[1];
+    ObDatum &count_datum = row->storage_datums_[2];
+    ObDatum &len_datum = row->storage_datums_[3];
+    const ObString word = word_datum.is_null() ? ObString() : word_datum.get_string();
+    const ObString doc = doc_datum.is_null() ? ObString() : doc_datum.get_string();
+    if (!word.empty() && ObFtsCompactCollector::DOC_ID_SIZE == doc.length()) {
+      const uint32_t tf = count_datum.is_null() ? 1 : static_cast<uint32_t>(count_datum.get_int());
+      const uint32_t doc_len = len_datum.is_null() ? 0 : static_cast<uint32_t>(len_datum.get_int());
+      if (OB_FAIL(ObFtsCompactCollector::instance().add(build_id, word, doc.ptr(), tf, doc_len))) {
+      }
+    }
   }
   return ret;
 }

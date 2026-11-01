@@ -473,6 +473,16 @@ public:
   ~ObTableScanOp();
 
   int inner_open() override;
+  void set_skip_projection() override
+  {
+    if (OB_NOT_NULL(iter_tree_)) {
+      iter_tree_->set_skip_projection();
+    }
+  }
+  int get_match_count(int64_t &count) override
+  {
+    return OB_ISNULL(iter_tree_) ? OB_NOT_INIT : iter_tree_->get_match_count(count);
+  }
   int inner_rescan() override;
   int switch_iterator() override;
   int inner_get_next_row() override;

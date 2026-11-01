@@ -17,6 +17,7 @@
 #define USING_LOG_PREFIX SQL_OPT
 #include "config_bridge.h"
 #include "ob_log_plan.h"
+#include "sql/resolver/dml/ob_stmt_expr_visitor.h"
 #include "sql/optimizer/ob_pwj_comparer.h"
 #include "sql/optimizer/stat/ob_opt_stat_manager.h"
 #include "sql/optimizer/ob_log_table_scan.h"
@@ -11987,6 +11988,48 @@ int ObLogPlan::construct_startup_filter_for_limit(ObRawExpr *limit_expr, ObLogic
   return ret;
 }
 
+// Elide scoring only for a bare, unboosted natural-language WHERE truth test.
+// Any MATCH outside that exact condition (including an equivalent but distinct
+// raw expression), child query, lock or score consumer keeps the original path.
+static int can_omit_match_score(const ObDMLStmt *stmt,
+                               const ObMatchFunRawExpr *match,
+                               const ObRawExpr *filter,
+                               bool &can_omit)
+{
+  int ret = OB_SUCCESS;
+  can_omit = false;
+  if (OB_ISNULL(stmt) || OB_ISNULL(match) || OB_ISNULL(filter)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (!stmt->is_select_stmt() || stmt->has_for_update() || match->is_es_match()
+             || match->get_mode_flag() != NATURAL_LANGUAGE_MODE
+             || !match->get_columns_boosts().empty()
+             || filter->get_expr_type() != T_OP_BOOL || filter->get_param_count() != 1
+             || filter->get_param_expr(0) != match) {
+  } else {
+    ObSEArray<ObSelectStmt *, 4> children;
+    ObSEArray<ObRawExpr *, 16> other_exprs;
+    ObStmtExprGetter visitor;
+    visitor.set_relation_scope();
+    visitor.remove_scope(SCOPE_WHERE);
+    if (OB_FAIL(stmt->get_child_stmts(children))) {
+    } else if (!children.empty()) {
+    } else if (OB_FAIL(stmt->get_relation_exprs(other_exprs, visitor))) {
+    } else {
+      can_omit = true;
+      for (int64_t i = 0; can_omit && i < other_exprs.count(); ++i) {
+        can_omit = other_exprs.at(i) != nullptr && !other_exprs.at(i)->has_flag(CNT_MATCH_EXPR);
+      }
+      const auto &conditions = stmt->get_condition_exprs();
+      for (int64_t i = 0; can_omit && i < conditions.count(); ++i) {
+        const ObRawExpr *condition = conditions.at(i);
+        can_omit = condition != nullptr
+            && (condition == filter || !condition->has_flag(CNT_MATCH_EXPR));
+      }
+    }
+  }
+  return ret;
+}
+
 int ObLogPlan::prepare_text_retrieval_scan(const ObIArray<ObRawExpr *> &scan_match_exprs,
                                            const ObIArray<ObRawExpr *> &scan_match_filters,
                                            const ObIArray<ObRawExpr *> &all_match_filters,
@@ -12046,6 +12089,14 @@ int ObLogPlan::prepare_text_retrieval_scan(const ObIArray<ObRawExpr *> &scan_mat
     }
     if (OB_FAIL(table_scan->set_is_skip_rowkey_doc(tr_info.doc_id_idx_tid_ == OB_INVALID_ID))) {
     } else if (OB_FAIL(table_scan->set_is_skip_rowkey_doc(tr_info.rowkey_idx_tid_ == OB_INVALID_ID))) {
+    }
+    if (OB_SUCC(ret) && all_match_filters.count() == 1
+        && !table_scan->is_vec_adaptive_scan() && !table_scan->is_vec_idx_scan_post_filter()) {
+      bool can_omit = false;
+      if (OB_FAIL(can_omit_match_score(get_stmt(), match_against, match_pred, can_omit))) {
+      } else if (can_omit) {
+        tr_info.need_calc_relevance_ = false;
+      }
     }
   }
 

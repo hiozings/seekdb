@@ -33,6 +33,7 @@ DATA_PLANE_API_INTERFACE_HEADERS = [
     "api/data_plane/fts/dict/ob_dic_lock_service.h",
     "api/data_plane/fts/dict/ob_gen_dic_loader.h",
     "api/data_plane/fts/ob_doc_id.h",
+    "api/data_plane/fts/fts_parser_generation.h",
     "api/data_plane/fts/ob_fts_doc_word_scan.h",
     "api/data_plane/fts/ob_fts_literal.h",
     "api/data_plane/fts/ob_fts_parser.h",

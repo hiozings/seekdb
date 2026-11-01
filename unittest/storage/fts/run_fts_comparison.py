@@ -80,6 +80,25 @@ def execute(args):
                 with (args.output / (label + '.bench.log')).open('w') as log:
                     subprocess.run(['bash', str(REPO / 'tools/benchmark/fts_large_bench.sh')],
                                    cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=900)
+                if args.collect_storage:
+                    # Diagnostic only, AFTER all official timed statements have finished.
+                    statement = """SELECT t.table_name,s.macro_block_type,
+                      SUM(s.original_size),SUM(s.encoding_size),SUM(s.compressed_size),
+                      SUM(s.occupy_size),SUM(s.row_count),COUNT(*)
+                      FROM oceanbase.__all_virtual_tablet_sstable_macro_info s
+                      JOIN oceanbase.__all_tablet_to_table m ON m.tablet_id=s.tablet_id
+                      JOIN oceanbase.__all_table t ON t.table_id=m.table_id
+                      JOIN oceanbase.__all_database d ON d.database_id=t.database_id
+                      WHERE d.database_name='fts_large_bench'
+                      GROUP BY t.table_name,s.macro_block_type ORDER BY 1,2"""
+                    try:
+                        storage = subprocess.run(mysql + ['-N', '-B', '-e', statement],
+                                                 capture_output=True, text=True, timeout=30)
+                        storage_result = {'returncode': storage.returncode, 'output': storage.stdout,
+                                          'error': storage.stderr, 'sql': statement}
+                    except subprocess.TimeoutExpired:
+                        storage_result = {'timeout': True, 'sql': statement}
+                    (args.output / (label + '.storage.json')).write_text(json.dumps(storage_result, indent=2))
                 summaries.append({'label': label, 'binary': str(binary), 'sha256': hashes[name],
                                   'server_command': server_command, 'report': label + '.report'})
                 (args.output / 'runs.json').write_text(json.dumps(summaries, indent=2))
@@ -99,4 +118,5 @@ if __name__ == '__main__':
     parser.add_argument('--server-cpus', default='8,10')
     parser.add_argument('--memory-limit', default='2G')
     parser.add_argument('--client-cpu', default='12')
+    parser.add_argument('--collect-storage', action='store_true', help='Collect block sizes after official timing')
     execute(parser.parse_args())

@@ -417,12 +417,26 @@ int ObSRDaaTIterImpl::project_results(const int64_t count)
 
   if (eval_ctx->is_vectorized()) {
     sql::ObBitVector &id_evaluated_flags = id_proj_expr->get_evaluated_flags(*eval_ctx);
-    for (int64_t i = 0; i < count; ++i) {
-      guard.set_batch_idx(i);
-      ObDatum &id_proj_datum = id_proj_expr->locate_datum_for_write(*eval_ctx);
-      set_datum_func_(id_proj_datum, buffered_domain_ids_[i]);
-      id_evaluated_flags.set(i);
+    if (id_proj_expr->is_batch_result() && nullptr == iter_param_->relevance_expr_
+        && id_proj_expr->datum_meta_.type_ == common::ObVarcharType
+        && id_proj_expr->datum_meta_.cs_type_ == common::CS_TYPE_BINARY) {
+      // Binary IDs use shallow datum projection from the owned result buffer.
+      // Restoring a per-row writable payload is unnecessary: set_datum replaces
+      // the pointer with that buffer's bytes, just as set_datum_shallow does.
+      const ObDatumVector ids = id_proj_expr->locate_expr_datumvector(*eval_ctx);
+      for (int64_t i = 0; i < count; ++i) {
+        ids.at(i)->set_datum(buffered_domain_ids_[i].get_datum());
+      }
+      id_evaluated_flags.set_all(count);
       id_proj_expr->set_evaluated_projected(*eval_ctx);
+    } else {
+      for (int64_t i = 0; i < count; ++i) {
+        guard.set_batch_idx(i);
+        ObDatum &id_proj_datum = id_proj_expr->locate_datum_for_write(*eval_ctx);
+        set_datum_func_(id_proj_datum, buffered_domain_ids_[i]);
+        id_evaluated_flags.set(i);
+        id_proj_expr->set_evaluated_projected(*eval_ctx);
+      }
     }
     if (iter_param_->need_project_relevance()) {
       sql::ObBitVector &relevance_evaluated_flags = relevance_proj_expr->get_evaluated_flags(*eval_ctx);
@@ -441,9 +455,11 @@ int ObSRDaaTIterImpl::project_results(const int64_t count)
     ObDatum &id_proj_datum = id_proj_expr->locate_datum_for_write(*eval_ctx);
     set_datum_func_(id_proj_datum, buffered_domain_ids_[0]);
     id_proj_expr->set_evaluated_projected(*eval_ctx);
-    ObDatum &relevance_proj_datum = relevance_proj_expr->locate_datum_for_write(*eval_ctx);
-    relevance_proj_datum.set_double(buffered_relevances_[0]);
-    relevance_proj_expr->set_evaluated_projected(*eval_ctx);
+    if (iter_param_->need_project_relevance()) {
+      ObDatum &relevance_proj_datum = relevance_proj_expr->locate_datum_for_write(*eval_ctx);
+      relevance_proj_datum.set_double(buffered_relevances_[0]);
+      relevance_proj_expr->set_evaluated_projected(*eval_ctx);
+    }
   }
   return ret;
 }

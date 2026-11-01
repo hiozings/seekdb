@@ -18,6 +18,8 @@
 
 #include "config_bridge.h"
 #include "rootserver/ddl_task/ob_fts_index_build_task.h"
+#include "sql/das/ob_fts_compact_collector.h"
+#include "sql/das/ob_fts_compact_registry.h"
 #include "share/rc/ob_server_runtime.h"
 #include "rootserver/ob_local_ddl_serial_call.h"
 #include "sql/resolver/ddl/ob_fts_index_builder_util.h"
@@ -279,6 +281,8 @@ int ObFtsIndexBuildTask::process()
       if (OB_SUCCESS != tmp_ret) {
         LOG_WARN("drop posting aux table on failed task failed", K(tmp_ret));
       }
+      ObFtsCompactCollector::instance().clear(
+          domain_index_aux_task_id_ > 0 ? domain_index_aux_task_id_ : task_id_);
     }
   }
   return ret;
@@ -564,12 +568,14 @@ int ObFtsIndexBuildTask::create_posting_aux_table()
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(build_posting_table_name(create_index_arg_.database_name_,
                                               object_id_, domain_index_aux_table_id_, name))) {
+  } else if (FALSE_IT(ObFtsCompactCollector::instance().clear(
+                 domain_index_aux_task_id_ > 0 ? domain_index_aux_task_id_ : task_id_))) {
   } else if (OB_FAIL(sql.assign_fmt(
                  "CREATE TABLE IF NOT EXISTS %s ("
                  "word varchar(1024) collate utf8mb4_general_ci not null, "
-                 "doc_id varchar(64) binary not null, "
-                 "word_count int not null, doc_length int not null, "
-                 "primary key(word, doc_id))", name.ptr()))) {
+                 "docs longblob not null, "
+                 "doc_count int not null, "
+                 "primary key(word))", name.ptr()))) {
   } else if (OB_FAIL(GCTX.sql_proxy_->write(sql.ptr(), affected_rows))) {
   }
   LOG_INFO("create posting aux table", K(ret), K(sql));
@@ -1648,7 +1654,60 @@ int ObFtsIndexBuildTask::wait_drop_index_finish(bool &is_finish)
 
 int ObFtsIndexBuildTask::succ()
 {
-  return cleanup();
+  int ret = OB_SUCCESS;
+  int64_t compact_total_doc_cnt = 0;
+  double compact_avg_doc_len = 0.0;
+  if (config::_enable_fts_posting_index()
+      && OB_INVALID_ID != domain_index_aux_table_id_
+      && !create_index_arg_.database_name_.empty()
+      && OB_NOT_NULL(GCTX.sql_proxy_)) {
+    ObSqlString name;
+    if (OB_FAIL(build_posting_table_name(create_index_arg_.database_name_,
+                                         object_id_,
+                                         domain_index_aux_table_id_,
+                                         name))) {
+    } else if (OB_FAIL(ObFtsCompactCollector::instance().flush(
+                   domain_index_aux_task_id_ > 0 ? domain_index_aux_task_id_ : task_id_,
+                   *GCTX.sql_proxy_, name.string(), compact_total_doc_cnt, compact_avg_doc_len))) {
+      LOG_WARN("flush compact posting table failed", K(ret), K(name));
+    } else if (OB_NOT_NULL(GCTX.schema_service_)) {
+      share::schema::ObSchemaGetterGuard guard;
+      const ObTableSchema *compact_schema = nullptr;
+      ObSqlString raw_name;
+      if (OB_FAIL(GCTX.schema_service_->get_runtime_schema_guard(guard))) {
+      } else if (OB_FAIL(raw_name.assign_fmt("__fts_posting_%lu_%lu",
+                     object_id_, domain_index_aux_table_id_))) {
+      } else if (OB_FAIL(guard.get_table_schema(create_index_arg_.database_name_,
+                     raw_name.string(), false, compact_schema))) {
+      } else if (OB_NOT_NULL(compact_schema)) {
+        const ObColumnSchemaV2 *word_col = compact_schema->get_column_schema(ObString::make_string("word"));
+        const ObColumnSchemaV2 *docs_col = compact_schema->get_column_schema(ObString::make_string("docs"));
+        const ObColumnSchemaV2 *count_col = compact_schema->get_column_schema(ObString::make_string("doc_count"));
+        ObSEArray<ObTabletID, 1> tablet_ids;
+        ObFtsCompactEntry entry;
+        if (OB_ISNULL(word_col) || OB_ISNULL(docs_col) || OB_ISNULL(count_col)) {
+          ret = OB_ERR_UNEXPECTED;
+        } else if (OB_FAIL(compact_schema->get_tablet_ids(tablet_ids))) {
+        } else if (OB_UNLIKELY(tablet_ids.empty())) {
+          ret = OB_ERR_UNEXPECTED;
+        } else {
+          entry.table_id_ = compact_schema->get_table_id();
+          entry.tablet_id_ = tablet_ids.at(0);
+          entry.schema_version_ = compact_schema->get_schema_version();
+          entry.word_col_id_ = word_col->get_column_id();
+          entry.docs_col_id_ = docs_col->get_column_id();
+          entry.doc_count_col_id_ = count_col->get_column_id();
+          entry.total_doc_cnt_ = compact_total_doc_cnt;
+          entry.avg_doc_len_ = compact_avg_doc_len;
+          ObFtsCompactRegistry::instance().add(domain_index_aux_table_id_, entry);
+        }
+      }
+    }
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(cleanup())) {
+  }
+  return ret;
 }
 
 int ObFtsIndexBuildTask::collect_longops_stat(ObLongopsValue &value)

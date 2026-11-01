@@ -99,6 +99,25 @@ public:
   // changing from SEQUENTIAL_MERGE to SORT_MERGE, or the creation of a new batch of DAS tasks.
   // Therefore, the status needs to be explicitly set before calling get next rows.
   virtual int set_merge_status(MergeType merge_type);
+  virtual int get_match_count(int64_t &count)
+  {
+    int ret = common::OB_NOT_SUPPORTED;
+    for (int64_t i = 0; i < children_cnt_; ++i) {
+      if (OB_NOT_NULL(children_[i]) && common::OB_SUCCESS == children_[i]->get_match_count(count)) {
+        ret = common::OB_SUCCESS;
+        break;
+      }
+    }
+    return ret;
+  }
+  virtual void set_skip_projection()
+  {
+    for (int64_t i = 0; i < children_cnt_; ++i) {
+      if (OB_NOT_NULL(children_[i])) {
+        children_[i]->set_skip_projection();
+      }
+    }
+  }
 
   int init(ObDASIterParam &param);
   OB_INLINE bool is_inited() const { return inited_; }
