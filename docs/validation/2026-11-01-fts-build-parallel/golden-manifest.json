@@ -1,0 +1,10 @@
+{
+  "baseline.json": {
+    "sha256": "630dde18f5187d8d545ae98a852d170d7316df361e2802026368cc851c97f964",
+    "cases": 674
+  },
+  "candidate.json": {
+    "sha256": "630dde18f5187d8d545ae98a852d170d7316df361e2802026368cc851c97f964",
+    "cases": 674
+  }
+}

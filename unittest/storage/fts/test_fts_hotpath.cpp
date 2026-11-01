@@ -1,5 +1,6 @@
 /* Copyright (c) 2026 OceanBase. Licensed under the Apache License, Version 2.0. */
 #include <gtest/gtest.h>
+#include "share/ob_rpc_struct.h"
 #include <chrono>
 #include <cstdlib>
 #include <cstdio>
@@ -714,6 +715,29 @@ TEST(FtsHotpath, OpaqueIdBlocksSupportAllocationFreeBatchReads)
     ASSERT_EQ(sizeof(expected), decoded[i].len_);
     EXPECT_EQ(0, memcmp(expected, decoded[i].ptr_, sizeof(expected)));
   }
+}
+
+TEST(FtsHotpath, DefaultParallelFlagSurvivesIndexTaskTransport)
+{
+  oceanbase::obcall::ObCreateIndexArg source;
+  EXPECT_FALSE(source.is_default_parallel_);
+  source.is_default_parallel_ = true;
+  source.parallelism_ = 1;
+  oceanbase::obcall::ObCreateIndexArg copied;
+  ASSERT_EQ(OB_SUCCESS, copied.assign(source));
+  EXPECT_TRUE(copied.is_default_parallel_);
+  const int64_t size = source.get_serialize_size();
+  std::vector<char> buffer(size);
+  int64_t pos = 0;
+  ASSERT_EQ(OB_SUCCESS, source.serialize(buffer.data(), size, pos));
+  ASSERT_EQ(size, pos);
+  oceanbase::obcall::ObCreateIndexArg decoded;
+  pos = 0;
+  ASSERT_EQ(OB_SUCCESS, decoded.deserialize(buffer.data(), size, pos));
+  EXPECT_TRUE(decoded.is_default_parallel_);
+  EXPECT_EQ(1, decoded.parallelism_);
+  decoded.reset();
+  EXPECT_FALSE(decoded.is_default_parallel_);
 }
 
 int main(int argc, char **argv) { ::testing::InitGoogleTest(&argc, argv); return RUN_ALL_TESTS(); }

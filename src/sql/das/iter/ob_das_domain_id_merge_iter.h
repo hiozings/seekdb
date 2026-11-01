@@ -138,7 +138,8 @@ protected:
   int get_and_fill_domain_id_in_data_table(
       const ObDASScanCtDef *ctdef,
       ObDASScanRtDef *rtdef,
-      common::ObIAllocator &allocator);
+      common::ObIAllocator &allocator,
+      const bool has_filled_domain_id = false);
   int get_domain_ids(
       const int64_t size,
       const ObDASScanCtDef *ctdef,
@@ -159,6 +160,13 @@ protected:
   int multi_get_row();
   int multi_get_rows(int64_t &count, int64_t capacity);
   int check_is_emb_vec_domain(int64_t iter_idx, bool &is_emb_vec);
+  int check_is_doc_id_domain(int64_t iter_idx, bool &is_doc_id);
+  int check_need_sampled_doc_id_lookup(bool &need_lookup);
+  int check_is_sampled_doc_id_domain(int64_t iter_idx, bool &is_doc_id);
+  int lookup_sampled_domain_id(int64_t iter_idx,
+                               common::ObIAllocator &allocator,
+                               const common::ObRowkey &data_table_rowkey,
+                               bool &is_found);
   int reset_rowkey_domain_iter_scan_range(int64_t iter_idx, const common::ObRowkey &data_table_rowkey);
   int fill_null_domain_id_in_data_table(const ObDASScanCtDef *ctdef,
                                        ObDASScanRtDef *rtdef,

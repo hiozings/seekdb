@@ -1,0 +1,122 @@
+[
+  {
+    "label": "1-baseline",
+    "binary": "/work/build_bench/bin/fts-build-final-batch",
+    "sha256": "f3d71993e85ad40ba43012153b795ed55a36dca6882b25a24d06f5c698e71d81",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10,14,16",
+      "/work/build_bench/bin/fts-build-final-batch",
+      "--nodaemon",
+      "--base-dir=/work/build_bench/20261101-fts-parallel-4cpu-ab/runs/1-baseline.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=4",
+      "--log-level=WARN"
+    ],
+    "report": "1-baseline.report"
+  },
+  {
+    "label": "2-candidate",
+    "binary": "/work/build_bench/bin/fts-parallel-v1",
+    "sha256": "7072bd1e5de392a2e083bea0f95972444600d4fc17d530297bcce0a596c61610",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10,14,16",
+      "/work/build_bench/bin/fts-parallel-v1",
+      "--nodaemon",
+      "--base-dir=/work/build_bench/20261101-fts-parallel-4cpu-ab/runs/2-candidate.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=4",
+      "--log-level=WARN"
+    ],
+    "report": "2-candidate.report"
+  },
+  {
+    "label": "3-candidate",
+    "binary": "/work/build_bench/bin/fts-parallel-v1",
+    "sha256": "7072bd1e5de392a2e083bea0f95972444600d4fc17d530297bcce0a596c61610",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10,14,16",
+      "/work/build_bench/bin/fts-parallel-v1",
+      "--nodaemon",
+      "--base-dir=/work/build_bench/20261101-fts-parallel-4cpu-ab/runs/3-candidate.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=4",
+      "--log-level=WARN"
+    ],
+    "report": "3-candidate.report"
+  },
+  {
+    "label": "4-baseline",
+    "binary": "/work/build_bench/bin/fts-build-final-batch",
+    "sha256": "f3d71993e85ad40ba43012153b795ed55a36dca6882b25a24d06f5c698e71d81",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10,14,16",
+      "/work/build_bench/bin/fts-build-final-batch",
+      "--nodaemon",
+      "--base-dir=/work/build_bench/20261101-fts-parallel-4cpu-ab/runs/4-baseline.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=4",
+      "--log-level=WARN"
+    ],
+    "report": "4-baseline.report"
+  },
+  {
+    "label": "5-baseline",
+    "binary": "/work/build_bench/bin/fts-build-final-batch",
+    "sha256": "f3d71993e85ad40ba43012153b795ed55a36dca6882b25a24d06f5c698e71d81",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10,14,16",
+      "/work/build_bench/bin/fts-build-final-batch",
+      "--nodaemon",
+      "--base-dir=/work/build_bench/20261101-fts-parallel-4cpu-ab/runs/5-baseline.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=4",
+      "--log-level=WARN"
+    ],
+    "report": "5-baseline.report"
+  },
+  {
+    "label": "6-candidate",
+    "binary": "/work/build_bench/bin/fts-parallel-v1",
+    "sha256": "7072bd1e5de392a2e083bea0f95972444600d4fc17d530297bcce0a596c61610",
+    "server_command": [
+      "taskset",
+      "-c",
+      "8,10,14,16",
+      "/work/build_bench/bin/fts-parallel-v1",
+      "--nodaemon",
+      "--base-dir=/work/build_bench/20261101-fts-parallel-4cpu-ab/runs/6-candidate.instance",
+      "--port=12886",
+      "--parameter",
+      "memory_limit=2G",
+      "--parameter",
+      "cpu_count=4",
+      "--log-level=WARN"
+    ],
+    "report": "6-candidate.report"
+  }
+]

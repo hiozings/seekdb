@@ -1,0 +1,255 @@
+{
+  "baseline_label": "baseline",
+  "runs_per_version": 3,
+  "reports": {
+    "baseline": [
+      "build_bench/20261101-fts-parallel-pcores-original-ab/runs/1-baseline.report",
+      "build_bench/20261101-fts-parallel-pcores-original-ab/runs/4-baseline.report",
+      "build_bench/20261101-fts-parallel-pcores-original-ab/runs/5-baseline.report"
+    ],
+    "candidate": [
+      "build_bench/20261101-fts-parallel-pcores-original-ab/runs/2-candidate.report",
+      "build_bench/20261101-fts-parallel-pcores-original-ab/runs/3-candidate.report",
+      "build_bench/20261101-fts-parallel-pcores-original-ab/runs/6-candidate.report"
+    ]
+  },
+  "categories": {
+    "build": {
+      "improvement": 0.2748085819812496,
+      "metrics": [
+        {
+          "metric": "build_ik_all_sec",
+          "before": 3.6833333333333336,
+          "after": 2.5516666666666667,
+          "improvement": 0.3072398190045249,
+          "before_runs": [
+            3.547,
+            3.755,
+            3.748
+          ],
+          "after_runs": [
+            2.451,
+            2.652,
+            2.552
+          ]
+        },
+        {
+          "metric": "build_ik_content_sec",
+          "before": 3.1,
+          "after": 2.268,
+          "improvement": 0.26838709677419365,
+          "before_runs": [
+            3.435,
+            2.933,
+            2.932
+          ],
+          "after_runs": [
+            2.033,
+            2.436,
+            2.335
+          ]
+        },
+        {
+          "metric": "build_beng_en_sec",
+          "before": 1.5956666666666666,
+          "after": 1.1986666666666668,
+          "improvement": 0.24879883016503018,
+          "before_runs": [
+            1.528,
+            1.629,
+            1.63
+          ],
+          "after_runs": [
+            1.339,
+            1.028,
+            1.229
+          ]
+        }
+      ]
+    },
+    "tokenize": {
+      "improvement": 0.2978518642616481,
+      "metrics": [
+        {
+          "metric": "tokenize_ik_avg_ms",
+          "before": 0.07050000000000001,
+          "after": 0.03843333333333333,
+          "improvement": 0.4548463356973996,
+          "before_runs": [
+            0.0689,
+            0.0697,
+            0.0729
+          ],
+          "after_runs": [
+            0.0415,
+            0.0367,
+            0.0371
+          ]
+        },
+        {
+          "metric": "tokenize_beng_avg_ms",
+          "before": 0.0381,
+          "after": 0.032733333333333337,
+          "improvement": 0.1408573928258967,
+          "before_runs": [
+            0.0381,
+            0.0381,
+            0.0381
+          ],
+          "after_runs": [
+            0.0344,
+            0.0348,
+            0.029
+          ]
+        }
+      ]
+    },
+    "query": {
+      "improvement": 0.7208104400569544,
+      "metrics": [
+        {
+          "metric": "query_cn_avg_ms",
+          "before": 1.6016,
+          "after": 0.5303333333333333,
+          "improvement": 0.6688727938727939,
+          "before_runs": [
+            1.5641,
+            1.5973,
+            1.6434
+          ],
+          "after_runs": [
+            0.5536,
+            0.5176,
+            0.5198
+          ]
+        },
+        {
+          "metric": "query_beng_avg_ms",
+          "before": 2.2346666666666666,
+          "after": 0.8500333333333333,
+          "improvement": 0.619615155131265,
+          "before_runs": [
+            2.1394,
+            2.2948,
+            2.2698
+          ],
+          "after_runs": [
+            0.8425,
+            0.8243,
+            0.8833
+          ]
+        },
+        {
+          "metric": "query_mixed_avg_ms",
+          "before": 1.7834,
+          "after": 0.6147,
+          "improvement": 0.6553212964001346,
+          "before_runs": [
+            1.7516,
+            1.8092,
+            1.7894
+          ],
+          "after_runs": [
+            0.6124,
+            0.5762,
+            0.6555
+          ]
+        },
+        {
+          "metric": "query_limit_avg_ms",
+          "before": 1.9900666666666667,
+          "after": 0.12053333333333334,
+          "improvement": 0.939432514823624,
+          "before_runs": [
+            1.9223,
+            1.9934,
+            2.0545
+          ],
+          "after_runs": [
+            0.1137,
+            0.13,
+            0.1179
+          ]
+        }
+      ]
+    }
+  },
+  "local_mean_improvement": 0.4311569620999507,
+  "ci_reference_only": {
+    "score": 100.0,
+    "mean_improvement": 0.9436718050323641,
+    "full_score_improvement": 0.5,
+    "categories": {
+      "build": {
+        "improvement": 0.9221776899034568,
+        "metrics": [
+          {
+            "metric": "build_ik_all_sec",
+            "baseline": 35.2836,
+            "current": 2.5516666666666667,
+            "improvement": 0.9276812267833592
+          },
+          {
+            "metric": "build_ik_content_sec",
+            "baseline": 28.3764,
+            "current": 2.268,
+            "improvement": 0.9200744280458409
+          },
+          {
+            "metric": "build_beng_en_sec",
+            "baseline": 14.7578,
+            "current": 1.1986666666666668,
+            "improvement": 0.9187774148811703
+          }
+        ]
+      },
+      "tokenize": {
+        "improvement": 0.9361462749196823,
+        "metrics": [
+          {
+            "metric": "tokenize_ik_avg_ms",
+            "baseline": 0.76478,
+            "current": 0.03843333333333333,
+            "improvement": 0.9497458964233724
+          },
+          {
+            "metric": "tokenize_beng_avg_ms",
+            "baseline": 0.42262,
+            "current": 0.032733333333333337,
+            "improvement": 0.9225466534159923
+          }
+        ]
+      },
+      "query": {
+        "improvement": 0.9726914502739532,
+        "metrics": [
+          {
+            "metric": "query_cn_avg_ms",
+            "baseline": 16.66282,
+            "current": 0.5303333333333333,
+            "improvement": 0.9681726542486004
+          },
+          {
+            "metric": "query_beng_avg_ms",
+            "baseline": 24.30424,
+            "current": 0.8500333333333333,
+            "improvement": 0.9650253069697579
+          },
+          {
+            "metric": "query_mixed_avg_ms",
+            "baseline": 17.55928,
+            "current": 0.6147,
+            "improvement": 0.9649928698671016
+          },
+          {
+            "metric": "query_limit_avg_ms",
+            "baseline": 16.23338,
+            "current": 0.12053333333333334,
+            "improvement": 0.9925749700103531
+          }
+        ]
+      }
+    }
+  },
+  "note": "Local measurements are not official CI scores. No per-metric negative clipping. All runs included."
+}

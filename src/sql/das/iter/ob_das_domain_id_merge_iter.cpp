@@ -298,7 +298,27 @@ int ObDASDomainIdMergeIter::inner_get_next_rows(int64_t &count, int64_t capacity
     if (OB_FAIL(multi_get_rows(count, capacity))) {
     }
   } else if (!need_filter_rowkey_domain_) {
-    if (OB_FAIL(concat_rows(count, capacity))) {
+    bool need_sample_doc_id_lookup = false;
+    if (OB_FAIL(check_need_sampled_doc_id_lookup(need_sample_doc_id_lookup))) {
+    } else if (need_sample_doc_id_lookup) {
+      // Sampling needs an exact domain lookup for each selected source row.
+      // Produce one source row at batch index zero; the FTS scan above expands
+      // its postings into batches without mixing document lifetimes.
+      count = 0;
+      if (OB_UNLIKELY(capacity <= 0)) {
+        ret = OB_INVALID_ARGUMENT;
+      } else if (OB_ISNULL(data_table_rtdef_) || OB_ISNULL(data_table_rtdef_->eval_ctx_)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else {
+        ObEvalCtx::BatchInfoScopeGuard guard(*data_table_rtdef_->eval_ctx_);
+        guard.set_batch_idx(0);
+        guard.set_batch_size(1);
+        if (OB_FAIL(concat_row())) {
+        } else {
+          count = 1;
+        }
+      }
+    } else if (OB_FAIL(concat_rows(count, capacity))) {
     }
   } else if (OB_FAIL(sorted_merge_join_rows(count, capacity))) {
   }
@@ -406,7 +426,16 @@ int ObDASDomainIdMergeIter::build_rowkey_domain_range()
           if (!data_table_iter_->get_scan_param().need_switch_param_) {
             scan_param.need_switch_param_ = false;
           }
-          is_no_sample_ = (scan_param.sample_info_.method_ == common::SampleInfo::NO_SAMPLE);
+          is_no_sample_ = (data_table_iter_->get_scan_param().sample_info_.method_
+                           == common::SampleInfo::NO_SAMPLE);
+          bool is_sampled_doc_id_domain = false;
+          if (OB_FAIL(check_is_sampled_doc_id_domain(k, is_sampled_doc_id_domain))) {
+          } else if (is_sampled_doc_id_domain) {
+            // The doc id of a sampled row is looked up by its exact rowkey, so the rowkey domain
+            // table scan must not sample: the sampler of the rowkey domain table picks rows by
+            // their position in a different table and would return the doc id of another row.
+            scan_param.sample_info_.reset();
+          }
           LOG_INFO("build rowkey domain range", K(ret), K(scan_param.key_ranges_), K(scan_param.sample_info_));
         }
       }
@@ -525,7 +554,14 @@ int ObDASDomainIdMergeIter::concat_row()
     } else if (ret != OB_ITER_END) {
     }
   } else {
+    bool need_sample_doc_id_lookup = false;
+    common::ObRowkey data_table_rowkey;
+    if (OB_FAIL(check_need_sampled_doc_id_lookup(need_sample_doc_id_lookup))) {
+    } else if (need_sample_doc_id_lookup
+               && OB_FAIL(get_rowkey(allocator, data_table_ctdef_, data_table_rtdef_, data_table_rowkey))) {
+    }
     for (int64_t i = 0; OB_SUCC(ret) && i < rowkey_domain_iters_.count(); i++) {
+      bool has_filled_domain_id = false;
       if (is_no_sample_) {
         if (OB_ISNULL(rowkey_domain_iters_.at(i))) {
           ret = OB_ERR_UNEXPECTED;
@@ -536,9 +572,19 @@ int ObDASDomainIdMergeIter::concat_row()
           } else {
           }
         }
+      } else if (need_sample_doc_id_lookup) {
+        bool is_doc_id_domain = false;
+        if (OB_FAIL(check_is_doc_id_domain(i, is_doc_id_domain))) {
+        } else if (is_doc_id_domain
+                   && OB_FAIL(lookup_sampled_domain_id(i, allocator,
+                                                       data_table_rowkey, has_filled_domain_id))) {
+        }
       }
       if (OB_FAIL(ret)) {
-      } else if (OB_FAIL(get_and_fill_domain_id_in_data_table(rowkey_domain_ctdefs_.at(i), rowkey_domain_rtdefs_.at(i), allocator))) {
+      } else if (OB_FAIL(get_and_fill_domain_id_in_data_table(rowkey_domain_ctdefs_.at(i),
+                                                              rowkey_domain_rtdefs_.at(i),
+                                                              allocator,
+                                                              has_filled_domain_id))) {
       }
     }
   }
@@ -866,14 +912,19 @@ int ObDASDomainIdMergeIter::get_domain_id(
 int ObDASDomainIdMergeIter::get_and_fill_domain_id_in_data_table(
     const ObDASScanCtDef *ctdef,
     ObDASScanRtDef *rtdef,
-    common::ObIAllocator &allocator)
+    common::ObIAllocator &allocator,
+    const bool has_filled_domain_id)
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(ctdef) || OB_ISNULL(rtdef) || OB_ISNULL(data_table_ctdef_) || OB_ISNULL(data_table_rtdef_)) {
     ret = OB_INVALID_ARGUMENT;
   } else {
+    // The domain id of the current data row is available either from the lockstep rowkey domain
+    // scan of a real scan, or from the exact point lookup of a sampled doc id (see
+    // lookup_sampled_domain_id). Otherwise the domain id is left empty, as before.
+    const bool has_domain_id = is_no_sample_ || has_filled_domain_id;
     share::ObDomainIdUtils::DomainIds domain_id;
-    if (is_no_sample_ && OB_FAIL(get_domain_id(ctdef, rtdef, allocator, domain_id))) {
+    if (has_domain_id && OB_FAIL(get_domain_id(ctdef, rtdef, allocator, domain_id))) {
     } else {
       int64_t domain_type = ObDomainIdUtils::ObDomainIDType::MAX;
       DomainIdxs domain_id_idxs;
@@ -886,13 +937,13 @@ int ObDASDomainIdMergeIter::get_and_fill_domain_id_in_data_table(
         ret = OB_ERR_UNEXPECTED;
       } else if (FALSE_IT(domain_type = data_table_ctdef_->domain_types_.at(idx))) {
       } else if (FALSE_IT(domain_id_idxs = data_table_ctdef_->domain_id_idxs_.at(idx))) {
-      } else if (is_no_sample_ && domain_id.count() != domain_id_idxs.count()) {
+      } else if (has_domain_id && domain_id.count() != domain_id_idxs.count()) {
         ret = OB_ERR_UNEXPECTED;
       } else {
         ObString empty_str;
         for (int64_t i = 0; OB_SUCC(ret) && i < domain_id_idxs.count(); ++i) {
           const int64_t domain_id_idx = domain_id_idxs.at(i);
-          const ObString& domain_id_str = is_no_sample_ ? domain_id.at(i) : empty_str;
+          const ObString& domain_id_str = has_domain_id ? domain_id.at(i) : empty_str;
           domain_id_expr = nullptr;
           if (domain_id_idx == -1) { // do nothing
           } else if (domain_id_idx < 0 || domain_id_idx >= data_table_ctdef_->result_output_.count()) {
@@ -1215,6 +1266,99 @@ int ObDASDomainIdMergeIter::check_is_emb_vec_domain(int64_t iter_idx, bool &is_e
   return ret;
 }
 
+int ObDASDomainIdMergeIter::check_is_doc_id_domain(int64_t iter_idx, bool &is_doc_id)
+{
+  int ret = OB_SUCCESS;
+  is_doc_id = false;
+
+  if (iter_idx < 0 || iter_idx >= rowkey_domain_iters_.count()) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_ISNULL(data_table_ctdef_)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    const uint64_t current_domain_tid = rowkey_domain_ctdefs_.at(iter_idx)->ref_table_id_;
+    for (int64_t i = 0; OB_SUCC(ret) && i < data_table_ctdef_->domain_tids_.count(); i++) {
+      if (data_table_ctdef_->domain_tids_.at(i) == current_domain_tid) {
+        if (i < data_table_ctdef_->domain_types_.count()) {
+          is_doc_id = (data_table_ctdef_->domain_types_.at(i) == ObDomainIdUtils::ObDomainIDType::DOC_ID);
+        }
+        break;
+      }
+    }
+  }
+  return ret;
+}
+
+int ObDASDomainIdMergeIter::check_need_sampled_doc_id_lookup(bool &need_lookup)
+{
+  int ret = OB_SUCCESS;
+  need_lookup = false;
+
+  if (OB_ISNULL(data_table_ctdef_)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (is_no_sample_) {
+    // A real scan fills the domain ids by the lockstep rowkey domain scan, so no point lookup
+    // is needed for it.
+  } else {
+    // Only the doc id has to be produced for a sampled fulltext ddl row: the sampled rows are
+    // used as the range cuts of the index tablet and must look exactly like the real rows.
+    // Other domain ids (e.g. the vector ids) keep the empty value they had before.
+    for (int64_t i = 0; !need_lookup && i < data_table_ctdef_->domain_types_.count(); i++) {
+      need_lookup = (data_table_ctdef_->domain_types_.at(i) == ObDomainIdUtils::ObDomainIDType::DOC_ID);
+    }
+  }
+  return ret;
+}
+
+int ObDASDomainIdMergeIter::check_is_sampled_doc_id_domain(int64_t iter_idx, bool &is_doc_id)
+{
+  int ret = OB_SUCCESS;
+  is_doc_id = false;
+
+  if (is_no_sample_) {
+    // nothing to look up for a real scan
+  } else if (OB_FAIL(check_is_doc_id_domain(iter_idx, is_doc_id))) {
+  }
+  return ret;
+}
+
+int ObDASDomainIdMergeIter::lookup_sampled_domain_id(
+    int64_t iter_idx,
+    common::ObIAllocator &allocator,
+    const common::ObRowkey &data_table_rowkey,
+    bool &is_found)
+{
+  int ret = OB_SUCCESS;
+  is_found = false;
+  common::ObRowkey rowkey_domain_rowkey;
+
+  if (OB_UNLIKELY(iter_idx < 0 || iter_idx >= rowkey_domain_iters_.count())) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_ISNULL(rowkey_domain_iters_.at(iter_idx))) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(reset_rowkey_domain_iter_scan_range(iter_idx, data_table_rowkey))) {
+  } else if (OB_FAIL(rowkey_domain_iters_.at(iter_idx)->get_next_row())) {
+    if (OB_UNLIKELY(OB_ITER_END != ret)) {
+      LOG_WARN("get next row from rowkey domain table failed", K(ret), K(iter_idx), K(data_table_rowkey));
+    } else {
+      // Every data table row has its rowkey domain row, but never fail the ddl build if one is
+      // missing: keep the doc id empty for this sampled row instead.
+      ret = OB_SUCCESS;
+      LOG_TRACE("rowkey domain row not found for the sampled row, keep empty doc id",
+                K(iter_idx), K(data_table_rowkey));
+    }
+  } else if (OB_FAIL(get_rowkey(allocator,
+                                rowkey_domain_ctdefs_.at(iter_idx),
+                                rowkey_domain_rtdefs_.at(iter_idx),
+                                rowkey_domain_rowkey))) {
+  } else if (OB_FAIL(rowkey_domain_rowkey.equal(data_table_rowkey, is_found))) {
+  } else if (!is_found) {
+    LOG_TRACE("rowkey domain row does not match the sampled row, keep empty doc id",
+              K(iter_idx), K(data_table_rowkey), K(rowkey_domain_rowkey));
+  }
+  return ret;
+}
+
 int ObDASDomainIdMergeIter::fill_null_domain_id_in_data_table(
     const ObDASScanCtDef *ctdef,
     ObDASScanRtDef *rtdef,
@@ -1316,7 +1460,16 @@ int ObDASDomainIdMergeIter::reset_rowkey_domain_iter_scan_range(int64_t iter_idx
       if (!data_table_iter_->get_scan_param().need_switch_param_) {
         scan_param.need_switch_param_ = false;
       }
-      if (OB_FAIL(iter->rescan())) {
+      bool is_sampled_doc_id_domain = false;
+      if (OB_FAIL(check_is_sampled_doc_id_domain(iter_idx, is_sampled_doc_id_domain))) {
+      } else {
+        if (is_sampled_doc_id_domain) {
+          // The range below is the exact rowkey of one sampled data row, so the rowkey domain
+          // table scan must not sample here.
+          scan_param.sample_info_.reset();
+        }
+        if (OB_FAIL(iter->rescan())) {
+        }
       }
       LOG_INFO("reset domain iter scan range", K(ret), K(iter_idx), K(is_emb_vec_domain), 
                 K(scan_param.key_ranges_), K(data_table_rowkey));

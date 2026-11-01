@@ -1,0 +1,18 @@
+{
+  "binary": "/work/build_bench/bin/fts-build-final-batch",
+  "sha256": "f3d71993e85ad40ba43012153b795ed55a36dca6882b25a24d06f5c698e71d81",
+  "command": [
+    "taskset",
+    "-c",
+    "8,10,14,16",
+    "/work/build_bench/bin/fts-build-final-batch",
+    "--nodaemon",
+    "--base-dir=/work/build_bench/20261101-fts-parallel-golden-v2/instance",
+    "--port=12889",
+    "--parameter",
+    "memory_limit=2G",
+    "--parameter",
+    "cpu_count=4",
+    "--log-level=WARN"
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "before": {
+    "8": "powersave",
+    "10": "powersave"
+  },
+  "requested": {
+    "8": "performance",
+    "10": "performance"
+  },
+  "user_authorized": true,
+  "image": "sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e",
+  "benchmark_completed": true,
+  "during": {
+    "8": "performance",
+    "10": "performance"
+  },
+  "after": {
+    "8": "powersave",
+    "10": "powersave"
+  },
+  "restored": true
+}

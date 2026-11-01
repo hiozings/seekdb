@@ -1,0 +1,10 @@
+Evidence: /tmp/seekdb-official-j0um3hq8
+ai_column_ddl: PASS
+ai_column_t1_dml: PASS
+ai_column_worker: PASS
+ai_column_retry_strict: PASS
+ai_column_vector_index: PASS
+ai_prompt: PASS
+ai_function_enhancement: PASS
+ai_model_endpoint_ddl: PASS
+file_sql_basic: PASS

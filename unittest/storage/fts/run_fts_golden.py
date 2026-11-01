@@ -35,7 +35,7 @@ def execute(args):
             digest.update(chunk)
     command = [str(binary), '--nodaemon', '--base-dir=' + str(args.output / 'instance'),
                '--port=' + str(args.port), '--parameter', 'memory_limit=2G',
-               '--parameter', 'cpu_count=2', '--log-level=WARN']
+               '--parameter', 'cpu_count=' + str(args.cpu_count), '--log-level=WARN']
     if args.server_cpus:
         command = ['taskset', '-c', args.server_cpus] + command
     client = ['mysql', '-h127.0.0.1', '-P' + str(args.port), '-uroot',
@@ -88,6 +88,9 @@ def execute(args):
             if args.build_batches:
                 from check_fts_build_batches import collect_build_batches
                 observed.update({'build-batch/' + key: value for key, value in collect_build_batches(args.port).items()})
+            if args.parallel_builds:
+                from check_fts_parallel_builds import collect_parallel_builds
+                observed.update({'parallel-build/' + key: value for key, value in collect_parallel_builds(args.port).items()})
             if args.mysqltest is not None:
                 suite = REPO / 'tools/deploy/mysql_test/test_suite/fts_index'
                 case_dir = args.output / (args.phase + '-mysqltest')
@@ -133,6 +136,8 @@ if __name__ == '__main__':
     parser.add_argument('--mysqltest', type=Path, help='Also run the unchanged TOKENIZE SQL regression')
     parser.add_argument('--expect-pruned-limit', action='store_true')
     parser.add_argument('--competition', action='store_true', help='Run unchanged official competition SQL suites')
+    parser.add_argument('--cpu-count', type=int, default=2)
+    parser.add_argument('--parallel-builds', action='store_true', help='Exercise default and explicit parallel FTS builds')
     parser.add_argument('--server-cpus')
     parser.add_argument('--client-cpu')
     parser.add_argument('--skip-collection', action='store_true', help='Diagnostic build/benchmark only; not correctness evidence')

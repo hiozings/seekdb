@@ -58,7 +58,7 @@ def execute(args):
         base.mkdir()
         server_command = ['taskset', '-c', args.server_cpus, str(binary), '--nodaemon',
                           '--base-dir=' + str(base), '--port=' + str(args.port),
-                          '--parameter', 'memory_limit=' + args.memory_limit, '--parameter', 'cpu_count=2', '--log-level=WARN']
+                          '--parameter', 'memory_limit=' + args.memory_limit, '--parameter', 'cpu_count=' + str(args.cpu_count), '--log-level=WARN']
         process = None
         with (args.output / (label + '.server.log')).open('w') as server_log:
             try:
@@ -115,6 +115,7 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--previous', type=Path, help='Optional third binary for cumulative regression comparison')
     parser.add_argument('--port', type=int, default=12886)
+    parser.add_argument('--cpu-count', type=int, default=2, help='Same configured CPU count for both owned instances')
     parser.add_argument('--server-cpus', default='8,10')
     parser.add_argument('--memory-limit', default='2G')
     parser.add_argument('--client-cpu', default='12')

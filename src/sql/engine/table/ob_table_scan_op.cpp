@@ -2216,7 +2216,7 @@ int ObTableScanOp::inner_get_next_batch(const int64_t max_row_cnt)
   if (OB_UNLIKELY(rand_scan_processor_.use_rand_scan())) {
     if (OB_FAIL(rand_scan_processor_.inner_get_next_batch(max_row_cnt))) {
     }
-  } else if (OB_UNLIKELY(MY_SPEC.is_fts_ddl_ && nullptr == tsc_rtdef_.scan_rtdef_.sample_info_)) {
+  } else if (OB_UNLIKELY(MY_SPEC.is_fts_ddl_)) {
     if (OB_FAIL(inner_get_next_fts_index_batch(max_row_cnt))) {
     }
   } else if (OB_FAIL(inner_get_next_batch_for_tsc(max_row_cnt))) {
@@ -2984,7 +2984,7 @@ int ObTableScanOp::inner_get_next_row()
       if (ret != OB_ITER_END) {
       }
     }
-  } else if (OB_UNLIKELY(MY_SPEC.is_fts_ddl_ && nullptr == tsc_rtdef_.scan_rtdef_.sample_info_)) {
+  } else if (OB_UNLIKELY(MY_SPEC.is_fts_ddl_)) {
     if (OB_FAIL(inner_get_next_fts_index_row())) {
       if (OB_ITER_END != ret) {
       }
@@ -3657,7 +3657,9 @@ int ObTableScanOp::inner_get_next_fts_index_row()
   }
   if (FAILEDx(fill_generated_fts_cols(row))) {
   } else if (OB_NOT_NULL(row) && MY_SPEC.is_fts_index_aux_
+             && nullptr == tsc_rtdef_.scan_rtdef_.sample_info_
              && config::_enable_fts_posting_index()) {
+    // Sampled postings only choose range cuts; they are not index contents.
     const uint64_t build_id = MY_SPEC.plan_->get_ddl_task_id();
     ObDatum &word_datum = row->storage_datums_[0];
     ObDatum &doc_datum = row->storage_datums_[1];
