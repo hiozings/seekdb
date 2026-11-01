@@ -53,8 +53,8 @@ def execute(args):
         subprocess.run(['docker', 'exec', '-e', 'GIT_CONFIG_COUNT=1',
                         '-e', 'GIT_CONFIG_KEY_0=safe.directory', '-e', 'GIT_CONFIG_VALUE_0=/work',
                         CONTAINER, 'python3', '/work/unittest/storage/fts/run_fts_comparison.py',
-                        '--baseline', '/work/build_bench/bin/official-5bce-seekdb',
-                        '--candidate', '/work/build_bench/bin/candidate-20261101-raw',
+                        '--baseline', args.baseline,
+                        '--candidate', args.candidate,
                         '--output', '/work/' + str(relative / 'runs'), '--port', '12886',
                         '--server-cpus', '8,10', '--client-cpu', '12', '--collect-storage'], check=True)
         state['benchmark_completed'] = True
@@ -75,6 +75,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image', required=True, help='Already installed utility image digest')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--baseline', default='/work/build_bench/bin/official-5bce-seekdb',
+                        help='Baseline binary path inside the test container')
+    parser.add_argument('--candidate', default='/work/build_bench/bin/candidate-20261101-raw',
+                        help='Candidate binary path inside the test container')
     args = parser.parse_args()
     signal.signal(signal.SIGTERM, interrupted)
     execute(args)

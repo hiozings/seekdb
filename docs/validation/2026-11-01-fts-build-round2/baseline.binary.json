@@ -1,0 +1,15 @@
+{
+  "binary": "/work/build_bench/bin/candidate-20261101-raw",
+  "sha256": "49e6dbdf7d3848d18fdf117951590d7e6b1bb7c9996b6dbc453b39526227aada",
+  "command": [
+    "/work/build_bench/bin/candidate-20261101-raw",
+    "--nodaemon",
+    "--base-dir=/work/build_bench/20261101-build-batch-golden-v3/instance",
+    "--port=12889",
+    "--parameter",
+    "memory_limit=2G",
+    "--parameter",
+    "cpu_count=2",
+    "--log-level=WARN"
+  ]
+}

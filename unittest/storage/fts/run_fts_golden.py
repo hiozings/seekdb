@@ -36,8 +36,12 @@ def execute(args):
     command = [str(binary), '--nodaemon', '--base-dir=' + str(args.output / 'instance'),
                '--port=' + str(args.port), '--parameter', 'memory_limit=2G',
                '--parameter', 'cpu_count=2', '--log-level=WARN']
+    if args.server_cpus:
+        command = ['taskset', '-c', args.server_cpus] + command
     client = ['mysql', '-h127.0.0.1', '-P' + str(args.port), '-uroot',
               '--default-character-set=utf8mb4', '-N', '-s', '-A']
+    if args.client_cpu:
+        client = ['taskset', '-c', args.client_cpu] + client
     process = None
     with (args.output / (args.phase + '.server.log')).open('w') as log:
         try:
@@ -80,7 +84,10 @@ def execute(args):
                     subprocess.run(['bash', str(REPO / 'tools/benchmark/fts_large_bench.sh')],
                                    env=env, stdout=setup_log, stderr=subprocess.STDOUT,
                                    check=True, timeout=900)
-            observed = collect(args.port)
+            observed = {} if args.skip_collection else collect(args.port)
+            if args.build_batches:
+                from check_fts_build_batches import collect_build_batches
+                observed.update({'build-batch/' + key: value for key, value in collect_build_batches(args.port).items()})
             if args.mysqltest is not None:
                 suite = REPO / 'tools/deploy/mysql_test/test_suite/fts_index'
                 case_dir = args.output / (args.phase + '-mysqltest')
@@ -126,4 +133,8 @@ if __name__ == '__main__':
     parser.add_argument('--mysqltest', type=Path, help='Also run the unchanged TOKENIZE SQL regression')
     parser.add_argument('--expect-pruned-limit', action='store_true')
     parser.add_argument('--competition', action='store_true', help='Run unchanged official competition SQL suites')
+    parser.add_argument('--server-cpus')
+    parser.add_argument('--client-cpu')
+    parser.add_argument('--skip-collection', action='store_true', help='Diagnostic build/benchmark only; not correctness evidence')
+    parser.add_argument('--build-batches', action='store_true', help='Check offline FTS builds across document and batch boundaries')
     execute(parser.parse_args())
