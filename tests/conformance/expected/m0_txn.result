@@ -1,0 +1,16 @@
+id	v
+1	z
+2	b
+id	v
+1	a
+id
+1
+3
+ERROR 1062: Duplicate entry '4' for key 'PRIMARY'
+id	v
+1	a
+3	c
+4	d
+id
+1
+3

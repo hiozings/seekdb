@@ -1,0 +1,13 @@
+-- Basic DDL, DML and projection.
+CREATE TABLE items (id BIGINT PRIMARY KEY, category VARCHAR(16), value BIGINT);
+INSERT INTO items VALUES (3, 'b', 30), (1, 'a', 10), (2, 'a', 20);
+SELECT * FROM items;
+SELECT id, value FROM items WHERE category = 'a';
+SELECT id, value FROM items WHERE value >= 20 AND category = 'b';
+SELECT id FROM items ORDER BY value DESC;
+SELECT id FROM items ORDER BY category, id LIMIT 2;
+UPDATE items SET value = 99 WHERE id = 2;
+SELECT id, value FROM items WHERE id = 2;
+DELETE FROM items WHERE category = 'b';
+SELECT * FROM items;
+SELECT id FROM items WHERE id = 2;

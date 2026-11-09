@@ -1,0 +1,31 @@
+cmake_minimum_required(VERSION 3.20)
+project(minivectordb LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+option(MVDB_STATIC_RUNTIME "Link libstdc++/libgcc statically" OFF)
+option(MVDB_BUILD_TESTS "Build unit tests" OFF)
+
+add_executable(minivectordb
+  src/main.cpp
+  src/util/util.cpp
+  src/sql/sql.cpp
+  src/exec/engine.cpp
+  src/protocol/protocol.cpp
+)
+
+target_include_directories(minivectordb PRIVATE src)
+target_compile_options(minivectordb PRIVATE -Wall -Wextra -Wno-unused-parameter)
+
+if(MVDB_STATIC_RUNTIME)
+  target_link_options(minivectordb PRIVATE -static-libstdc++ -static-libgcc)
+endif()
+
+find_package(Threads REQUIRED)
+target_link_libraries(minivectordb PRIVATE Threads::Threads)

@@ -1,0 +1,11 @@
+id	content	distance
+1	事务与恢复	0.141421
+4	并列项	0.141421
+id	distance
+3	1.000000
+id	distance
+1	1.000000
+2	1.000000
+4	1.000000
+id	embedding
+3	[0,0,1,0]
