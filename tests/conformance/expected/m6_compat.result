@@ -1,7 +1,14 @@
-1
-1
-one	label
-1	x
-ERROR 1146: Table 'c' doesn't exist
-ERROR 1146: Table 'c' doesn't exist
-ERROR 1146: Unknown table 'c'
+{"columns":["1"],"rows":[["1"]]}
+{"columns":["one","label"],"rows":[["1","x"]]}
+{}
+{}
+{}
+{}
+{}
+{}
+{"affected_rows":1}
+{}
+{"error":"unknown_table"}
+{"error":"unknown_table"}
+{}
+{"error":"unknown_table"}

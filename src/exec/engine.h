@@ -21,9 +21,15 @@ class VectorIndex;
 // are computed once per query instead of per row.
 struct PreparedCondition;
 
+// How a result cell must be rendered: JSON needs to know whether a value is a
+// number or a string without guessing from its text.
+enum class CellKind { Int, Str, Float };
+
 struct ResultSet {
   bool has_rows = false;
+  bool has_affected_rows = false;
   std::vector<std::string> columns;
+  std::vector<CellKind> column_kinds;
   std::vector<std::vector<std::string>> rows;
   int64_t affected_rows = 0;
 };

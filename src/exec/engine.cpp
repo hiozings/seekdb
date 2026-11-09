@@ -277,7 +277,7 @@ Value Engine::coerce(const TableMeta& meta, size_t column_index, const Value& in
       }
       const size_t chars = utf8_codepoint_count(text);
       if (static_cast<int64_t>(chars) > col.length) {
-        throw_sql_error(kErrOutOfRange,
+        throw_sql_error(kErrVarcharTooLong,
                         "Data too long for column '" + col.name + "' (" + std::to_string(chars) +
                             " > " + std::to_string(col.length) + " characters)");
       }
@@ -294,7 +294,7 @@ Value Engine::coerce(const TableMeta& meta, size_t column_index, const Value& in
                         "Incorrect value for VECTOR column '" + col.name + "'");
       }
       if (static_cast<int64_t>(vec.size()) != col.dim) {
-        throw_sql_error(kErrIncorrectValue,
+        throw_sql_error(kErrVectorDimension,
                         "Invalid vector dimension for column '" + col.name + "': expected " +
                             std::to_string(col.dim) + ", got " + std::to_string(vec.size()));
       }
@@ -542,6 +542,7 @@ ResultSet Engine::exec_insert(const Statement& stmt) {
     undo_.push_back(UndoOp{UndoOp::Kind::InsertedRow, table.meta.id, pk, rid, {}});
   }
   ResultSet rs;
+  rs.has_affected_rows = true;
   rs.affected_rows = static_cast<int64_t>(stmt.rows.size());
   return rs;
 }
@@ -568,6 +569,7 @@ ResultSet Engine::exec_delete(const Statement& stmt) {
     undo_.push_back(UndoOp{UndoOp::Kind::DeletedRow, table.meta.id, victim.pk, 0, victim.record});
   }
   ResultSet rs;
+  rs.has_affected_rows = true;
   rs.affected_rows = static_cast<int64_t>(victims.size());
   return rs;
 }
@@ -626,6 +628,7 @@ ResultSet Engine::exec_update(const Statement& stmt) {
         UndoOp{UndoOp::Kind::UpdatedRow, table.meta.id, target.pk, new_rid, target.old_record});
   }
   ResultSet rs;
+  rs.has_affected_rows = true;
   rs.affected_rows = static_cast<int64_t>(targets.size());
   return rs;
 }
@@ -677,10 +680,10 @@ ResultSet Engine::exec_select(const Statement& stmt) {
       }
       if (item.is_distance) {
         if (meta.columns[spec.table_index].type != ColumnType::Vector) {
-          throw_sql_error(kErrIncorrectValue, "L2_DISTANCE requires a VECTOR column");
+          throw_sql_error(kErrNotSupported, "L2_DISTANCE requires a VECTOR column");
         }
         if (static_cast<int64_t>(item.query.size()) != meta.columns[spec.table_index].dim) {
-          throw_sql_error(kErrIncorrectValue, "L2_DISTANCE query vector dimension mismatch");
+          throw_sql_error(kErrVectorDimension, "L2_DISTANCE query vector dimension mismatch");
         }
       }
       specs.push_back(std::move(spec));
@@ -931,7 +934,15 @@ ResultSet Engine::exec_select(const Statement& stmt) {
 
   ResultSet rs;
   rs.has_rows = true;
-  for (const OutputSpec& spec : specs) rs.columns.push_back(spec.name);
+  for (const OutputSpec& spec : specs) {
+    rs.columns.push_back(spec.name);
+    if (spec.is_distance) {
+      rs.column_kinds.push_back(CellKind::Float);
+    } else {
+      const ColumnType type = meta.columns[spec.table_index].type;
+      rs.column_kinds.push_back(type == ColumnType::BigInt ? CellKind::Int : CellKind::Str);
+    }
+  }
   rs.rows.reserve(out_rows.size());
   for (const OutRow& out : out_rows) {
     std::vector<std::string> line;

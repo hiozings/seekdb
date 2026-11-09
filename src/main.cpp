@@ -153,6 +153,7 @@ int main(int argc, char** argv) {
   std::signal(SIGPIPE, SIG_IGN);
 
   mvdb::FormatSpec spec = mvdb::load_format_spec_from_env();
+  if (spec.format == mvdb::OutputFormat::Json) spec.float_format = "%.17g";
   size_t pool_pages = 2048;
   if (const char* value = std::getenv("MVDB_POOL_PAGES")) {
     pool_pages = std::strtoul(value, nullptr, 10);
@@ -181,6 +182,28 @@ int main(int argc, char** argv) {
     // A bare exit command on its own line ends the session even though it is
     // not terminated by ';'.
     if (splitter.empty() && is_exit_command(line)) break;
+
+    // Driver directives never take an assertion slot and produce no output.
+    if (splitter.empty() && line.size() >= 2 && line[0] == '-' && line[1] == '-') {
+      const std::string directive = mvdb::to_lower(mvdb::trim(line));
+      if (directive == "--restart") {
+        // Graceful shutdown: roll back any open transaction, flush, exit. The
+        // driver starts a new process against the same data directory.
+        writer.flush();
+        engine.shutdown();
+        return 0;
+      }
+      if (directive.rfind("--mode", 0) == 0) {
+        const std::string value = mvdb::trim(directive.substr(6));
+        if (value == "ann") {
+          engine.set_mode(mvdb::Engine::QueryMode::Ann);
+        } else if (value == "exact") {
+          engine.set_mode(mvdb::Engine::QueryMode::Exact);
+        }
+        continue;
+      }
+      continue;  // unknown directive: ignore it rather than failing a case
+    }
     splitter.feed(line);
     while (splitter.next(statement)) {
       if (!handle_statement(statement, engine, writer, opts)) {

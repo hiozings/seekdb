@@ -10,14 +10,17 @@
 
 namespace mvdb {
 
-// All wire-format knobs live here so that the exact stdout contract can be
-// re-pointed at the official task package without touching the engine.
+// Wire format. The official package compares one JSON object per statement
+// against a JSON array; text mode is kept for local debugging.
+enum class OutputFormat { Json, Text };
+
+// All wire-format knobs live here so that the exact output contract can be
+// re-pointed without touching the engine.
 struct FormatSpec {
   enum class DmlOutput { None, AffectedRows, Ok };
 
+  OutputFormat format = OutputFormat::Json;
   bool print_header = true;
-  // mysql batch mode prints nothing at all for an empty result set; some
-  // drivers keep the header. Configurable because the task package decides.
   bool header_when_empty = true;
   std::string column_separator = "\t";
   std::string float_format = "%.6f";
@@ -28,6 +31,9 @@ struct FormatSpec {
 };
 
 FormatSpec load_format_spec_from_env();
+
+// Semantic error name used by JSON output, e.g. "duplicate_key".
+const char* error_name(int code);
 
 // Splits a byte stream into statements on ';' while respecting string literals
 // and comments. A trailing fragment is flushed explicitly at end of input.
@@ -60,7 +66,8 @@ class OutputWriter {
 
  private:
   void emit_line(const std::string& line);
-  void emit_raw(const std::string& text);
+  void write_result_json(const ResultSet& rs);
+  void write_result_text(const ResultSet& rs);
 
   FormatSpec spec_;
   std::string buf_;

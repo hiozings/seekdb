@@ -20,6 +20,11 @@ enum ErrCode : int {
   kErrIncorrectValue = 1366,
   kErrOutOfRange = 1264,
   kErrNotSupported = 1235,
+  // Internal codes for conditions the official package names explicitly.
+  kErrVectorDimension = 2001,
+  kErrVectorValue = 2002,
+  kErrVectorOverflow = 2003,
+  kErrVarcharTooLong = 2004,
   kErrNoPrimaryKey = 1173,
   kErrMultiplePrimaryKey = 1068,
   kErrDuplicateColumn = 1060,

@@ -33,8 +33,20 @@ docker run --rm -i -v minivectordb-data:/data --cpus=2 --memory=2g minivectordb:
 
 - 语句以 `;` 结尾，可跨行；`'...'` 字符串与 `--`、`/* */` 注释内部的 `;` 不切分。
 - 同时兼容"每行一条、不带分号"的输入：单行且能被完整解析时立即执行，多行语句仍以 `;` 为准。
-- 输出为制表符分隔的文本：先一行列名（`SELECT`），再逐行数据。
-- 错误输出为 `ERROR <code>: <message>`，出错后会话继续。
+- **输出为 JSON**：每条 SQL 对应一个 JSON 对象，一行一个，写完立即 flush。
+  与官方公开题包 `mysqltest/cases/*.result` 的数组元素一一对应：
+
+  | 语句 | 输出 |
+  | --- | --- |
+  | `CREATE TABLE` / `BEGIN` / `COMMIT` / `ROLLBACK` / `CREATE VECTOR INDEX` | `{}` |
+  | `INSERT` / `UPDATE` / `DELETE` | `{"affected_rows": N}` |
+  | `SELECT` | `{"columns": [...], "rows": [[...], ...]}`（空结果也带 `columns`） |
+  | 任何失败 | `{"error": "<语义名>"}`，如 `duplicate_key`、`unsupported_sql`、`dimension_mismatch` |
+
+- 驱动指令不占断言位置：`--restart` 会回滚未提交事务、落盘并退出（由驱动用同一数据目录重启），
+  `--mode ann|exact` 切换后续向量请求的模式。
+- 出错后会话继续执行后续语句。
+- 调试可直接看文本格式：`MVDB_FORMAT=text`（制表符分隔 + `ERROR <code>: <message>`）。
 - 结束方式：标准输入 EOF，或输入 `quit` / `exit` / `\q`。
 - 诊断开关：`--probe` 把每条语句与执行结果打到 stderr；`--stats` 在退出时报告进程峰值内存。
 
@@ -220,6 +232,19 @@ python3 tests/storage/large_dataset.py --rows 20000 --dim 128   # 超出页缓�
 python3 tests/crash/kill_test.py --trials 8     # 强制终止后的恢复不变量
 python3 tests/perf/calibrate.py --rows 10000 --dim 128 --queries 120   # 向量召回与延迟
 ```
+
+## 8.0 官方公开题包自测
+
+组织方在 `2026-competition-round2` 分支的 `mysqltest/` 下提供了 20 个公开样例（95 条 SQL），
+仓库内的 `tests/official/` 是这些文件的副本，配一个按官方协议驱动的本地 runner：
+
+```bash
+python3 tests/official/run_official.py          # 20/20
+```
+
+runner 会按 `--restart` 真正重启进程、按 `--mode` 切换模式，并按题包规则比较
+（`{}` 只要求成功、`error` 要求非空语义名、`affected_rows`/`columns` 精确、
+`rows` 逐行且浮点容差 1e-5、`unordered` 时按多重集）。
 
 ## 8.1 提交材料
 

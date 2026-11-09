@@ -190,11 +190,11 @@ std::vector<Token> tokenize(const std::string& sql) {
 // Converts a double to float, rejecting overflow and non-finite values.
 float to_float32(double value, const char* what) {
   if (!std::isfinite(value)) {
-    throw_sql_error(kErrIncorrectValue, std::string("non-finite value in ") + what);
+    throw_sql_error(kErrVectorValue, std::string("non-finite value in ") + what);
   }
   float f = static_cast<float>(value);
   if (!std::isfinite(f)) {
-    throw_sql_error(kErrOutOfRange, std::string("value out of float32 range in ") + what);
+    throw_sql_error(kErrVectorOverflow, std::string("value out of float32 range in ") + what);
   }
   return f;
 }
@@ -268,7 +268,7 @@ class Parser {
       advance();
       if (is_kw(peek(), "work")) advance();
     } else {
-      throw_sql_error(kErrSyntax, "syntax error: unsupported statement '" + peek().text + "'");
+      throw_sql_error(kErrNotSupported, "unsupported statement '" + peek().text + "'");
     }
     if (peek().kind != TokenKind::End) {
       syntax_error("unexpected trailing token '" + peek().text + "'");

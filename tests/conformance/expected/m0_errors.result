@@ -1,16 +1,16 @@
-ERROR 1062: Duplicate entry '1' for key 'PRIMARY'
-ERROR 1264: Data too long for column 'v' (5 > 4 characters)
-ERROR 1264: Data too long for column 'v' (5 > 4 characters)
-ERROR 1366: Invalid vector dimension for column 'e': expected 2, got 3
-ERROR 1264: value out of float32 range in vector literal
-ERROR 1062: Duplicate entry '6' for key 'PRIMARY'
-id	v	e
-1	abc	[1,2]
-ERROR 1054: Unknown column 'nope'
-ERROR 1146: Table 'missing_table' doesn't exist
-ERROR 1064: syntax error: unsupported statement 'ALTER'
-ERROR 1064: syntax error: unsupported statement 'MERGE'
-ERROR 1064: syntax error: unexpected trailing token 'OR'
-id	v	e
-1	abc	[1,2]
-7	事务与恢	[1,2]
+{}
+{"affected_rows":1}
+{"error":"duplicate_key"}
+{"error":"varchar_too_long"}
+{"error":"varchar_too_long"}
+{"error":"dimension_mismatch"}
+{"error":"float32_overflow"}
+{"error":"duplicate_key"}
+{"columns":["id","v","e"],"rows":[[1,"abc","[1,2]"]]}
+{"error":"unknown_column"}
+{"error":"unknown_table"}
+{"error":"unsupported_sql"}
+{"error":"unsupported_sql"}
+{"error":"syntax_error"}
+{"affected_rows":1}
+{"columns":["id","v","e"],"rows":[[1,"abc","[1,2]"],[7,"事务与恢","[1,2]"]]}

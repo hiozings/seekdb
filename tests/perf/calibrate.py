@@ -27,12 +27,15 @@ DEFAULT_BIN = ROOT / "build" / "minivectordb"
 
 
 def run(binary: Path, data_dir: Path, sql: str, timeout: int = 1800) -> str:
+    env = os.environ.copy()
+    env["MVDB_FORMAT"] = "text"
     proc = subprocess.run(
         [str(binary), "--data-dir", str(data_dir)],
         input=sql.encode(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=timeout,
+        env=env,
     )
     if proc.returncode != 0:
         raise SystemExit(f"exit {proc.returncode}: {proc.stderr.decode('utf-8', 'replace')[:2000]}")

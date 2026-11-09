@@ -1,9 +1,8 @@
-ERROR 1062: Duplicate entry '2' for key 'PRIMARY'
-id	v
-1	a
-2	b
-id	v
-1	again
-2	b
-id
-1
+{}
+{"affected_rows":2}
+{"error":"duplicate_key"}
+{"columns":["id","v"],"rows":[[1,"a"],[2,"b"]]}
+{"affected_rows":1}
+{"affected_rows":1}
+{"columns":["id","v"],"rows":[[1,"again"],[2,"b"]]}
+{"columns":["id"],"rows":[[1]]}

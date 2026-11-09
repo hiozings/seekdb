@@ -403,3 +403,53 @@ btree_test / hnsw_test / kill_test / 2 万行大数据集 全部通过
 官方驱动未到手，输出格式（表头、分隔符、浮点格式、DML 输出）、错误码文本、
 就绪标识与 exact/ann 切换方式仍无法对账。这些旋钮集中在 `FormatSpec`，
 拿到题包或预检日志后应可在一小时内调整。
+
+## 2026-11-09（准入失败的真正原因：协议是 JSON，不是文本）
+
+### 发现
+
+线上连续两次报"MySQL 正式用例 未通过"。此前一直假设题包不在仓库里，直到重新
+`git fetch upstream` 发现 **`2026-competition-round2` 分支已经前进**
+（`c842a368c` → `9f6df2ba5`），组织方上传了 `mysqltest/`：
+
+```
+mysqltest/README.md          协议与断言规则
+mysqltest/manifest.json      20 个公开样例
+mysqltest/cases/*.test       每个非空行一条 SQL 或驱动指令
+mysqltest/cases/*.result     JSON 数组，与 SQL 一一对应
+```
+
+真实协议与我们实现的完全不同：**每条 SQL 输出一个 JSON 对象**（一行一个），
+而不是制表符分隔的文本。
+
+| 语句 | 期望输出 |
+| --- | --- |
+| CREATE TABLE / BEGIN / COMMIT / ROLLBACK / CREATE VECTOR INDEX | `{}` |
+| INSERT / UPDATE / DELETE | `{"affected_rows": N}` |
+| SELECT | `{"columns": [...], "rows": [[...]]}`，空结果也带 `columns` |
+| 失败 | `{"error": "<语义名>"}`，如 `duplicate_key`、`unsupported_sql`、`dimension_mismatch` |
+
+此外 `--restart`、`--mode ann` 是驱动指令，不占断言位置。
+
+### 修复
+
+1. 输出层新增 JSON 模式并设为默认（`MVDB_FORMAT=text` 保留用于调试）。
+2. `ResultSet` 增加列类型（`CellKind`），JSON 才不会把字符串数字当数字输出；
+   浮点在 JSON 模式用 `%.17g`，BIGINT 原样输出（`9007199254740993` 精确）。
+3. 错误改成语义名映射（重复主键 → `duplicate_key`、不支持语句 → `unsupported_sql`、
+   维度不符 → `dimension_mismatch` 等）。
+4. 支持驱动指令：`--restart` 回滚未提交事务并退出，`--mode ann|exact` 切换模式。
+5. 把官方 20 个样例复制进 `tests/official/`，并写了按官方协议驱动的 runner。
+
+### 验证
+
+```
+20/20 official cases passed      # 官方公开样例
+10/10 自建 conformance（已改为 JSON 期望）
+kill -9 / B+tree / HNSW / 2 万行大数据集 全部通过
+```
+
+### 教训
+
+连续两次失败后，正确动作不是继续猜协议，而是**回头确认上游分支是否更新**。
+组织方的题包一直放在比赛分支上，只是我们从未重新 fetch；一次 `git fetch` 比两轮猜测更有价值。

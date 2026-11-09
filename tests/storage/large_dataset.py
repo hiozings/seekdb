@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import random
 import re
 import shutil
@@ -49,12 +50,15 @@ def write_sql(path: Path, rows: int, dim: int, batch: int, seed: int) -> None:
 
 def run(binary: Path, data_dir: Path, sql_path: Path) -> tuple[str, int]:
     with sql_path.open("rb") as fin:
+        env = os.environ.copy()
+        env["MVDB_FORMAT"] = "text"
         proc = subprocess.run(
             [str(binary), "--data-dir", str(data_dir), "--stats"],
             stdin=fin,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=1800,
+            env=env,
         )
     if proc.returncode != 0:
         raise SystemExit(f"exit {proc.returncode}: {proc.stderr.decode('utf-8', 'replace')}")

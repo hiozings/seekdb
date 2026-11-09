@@ -35,6 +35,7 @@ class Session:
     def __init__(self, binary: Path, data_dir: Path):
         env = os.environ.copy()
         env["MVDB_DML_OUTPUT"] = "affected"
+        env["MVDB_FORMAT"] = "text"
         self.proc = subprocess.Popen(
             [str(binary), "--data-dir", str(data_dir)],
             stdin=subprocess.PIPE,
@@ -77,6 +78,7 @@ class Session:
 
 def query_ids(binary: Path, data_dir: Path, table: str = "t") -> list[int]:
     env = os.environ.copy()
+    env["MVDB_FORMAT"] = "text"
     proc = subprocess.run(
         [str(binary), "--data-dir", str(data_dir)],
         input=f"SELECT id FROM {table} ORDER BY id;\n",
