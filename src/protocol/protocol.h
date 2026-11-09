@@ -37,6 +37,9 @@ class StatementSplitter {
   std::string flush_remaining();
   // True when no partial statement is pending.
   bool empty() const;
+  // Trimmed pending text, without consuming it.
+  std::string pending() const;
+  void clear_pending();
 
  private:
   std::string buf_;

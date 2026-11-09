@@ -144,6 +144,13 @@ std::string StatementSplitter::flush_remaining() {
 
 bool StatementSplitter::empty() const { return trim(buf_).empty(); }
 
+std::string StatementSplitter::pending() const { return trim(buf_); }
+
+void StatementSplitter::clear_pending() {
+  buf_.clear();
+  scan_ = 0;
+}
+
 void OutputWriter::emit_raw(const std::string& text) { buf_ += text; }
 
 void OutputWriter::emit_line(const std::string& line) {

@@ -21,7 +21,7 @@ SELECT * FROM t ORDER BY id;
 -- Unsupported columns, tables and statements.
 SELECT nope FROM t;
 SELECT * FROM missing_table;
-DROP TABLE t;
+ALTER TABLE t ADD COLUMN x BIGINT;
 MERGE INTO t VALUES (1);
 
 -- Unsupported operator.

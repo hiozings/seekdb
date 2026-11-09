@@ -117,6 +117,7 @@ class Engine {
   ResultSet exec_update(const Statement& stmt);
   ResultSet exec_delete(const Statement& stmt);
   ResultSet exec_create_vector_index(const Statement& stmt);
+  ResultSet exec_drop_table(const Statement& stmt);
   ResultSet exec_set_mode(const Statement& stmt);
   void build_vector_index(TableState& table);
 

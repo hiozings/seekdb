@@ -32,6 +32,7 @@ docker run --rm -i -v minivectordb-data:/data --cpus=2 --memory=2g minivectordb:
 ## 3. 运行协议
 
 - 语句以 `;` 结尾，可跨行；`'...'` 字符串与 `--`、`/* */` 注释内部的 `;` 不切分。
+- 同时兼容"每行一条、不带分号"的输入：单行且能被完整解析时立即执行，多行语句仍以 `;` 为准。
 - 输出为制表符分隔的文本：先一行列名（`SELECT`），再逐行数据。
 - 错误输出为 `ERROR <code>: <message>`，出错后会话继续。
 - 结束方式：标准输入 EOF，或输入 `quit` / `exit` / `\q`。
@@ -89,6 +90,8 @@ docker run --rm -i -v minivectordb-data:/data --cpus=2 --memory=2g minivectordb:
 | 事务 | `BEGIN` / `START TRANSACTION`、`COMMIT`、`ROLLBACK` |
 | 向量索引 | `CREATE VECTOR INDEX 名称 ON 表 (向量列)` |
 | 检索模式 | `SET mode = 'exact'` / `SET mode = 'ann'`，也支持 `/* mode=ann */` 语句注释 |
+| 表管理 | `DROP TABLE [IF EXISTS]`、`CREATE TABLE IF NOT EXISTS` |
+| 驱动兼容 | `SELECT <字面量>`、`SET NAMES`/`SET autocommit`/`SET SESSION ...` 等会话语句按无操作接受、`USE <db>` 无操作 |
 
 明确的语义约束：
 

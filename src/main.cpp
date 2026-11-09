@@ -188,6 +188,27 @@ int main(int argc, char** argv) {
         break;
       }
     }
+    // Fallback for a driver that terminates statements with a newline instead
+    // of ';': if the buffered text already parses, run it now. The parser
+    // reports "incomplete" for genuinely unfinished statements, which keeps
+    // multi-line statements working in both modes.
+    // Only single-line statements are eligible: a buffer spanning several
+    // lines means the driver is using ';' termination and a multi-line
+    // statement, which must not be executed early.
+    if (running && !splitter.empty()) {
+      const std::string pending = splitter.pending();
+      bool complete = pending.find('\n') == std::string::npos;
+      try {
+        mvdb::parse_statement(pending);
+      } catch (const mvdb::SqlError& err) {
+        if (err.code == mvdb::kIncomplete) complete = false;
+      } catch (...) {
+      }
+      if (complete) {
+        splitter.clear_pending();
+        if (!handle_statement(pending, engine, writer, opts)) running = false;
+      }
+    }
   }
   if (running) {
     const std::string rest = splitter.flush_remaining();

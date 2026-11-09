@@ -67,6 +67,10 @@ struct Token {
   throw_sql_error(kErrSyntax, "syntax error: " + detail);
 }
 
+[[noreturn]] void incomplete(const std::string& detail) {
+  throw SqlError{kIncomplete, detail};
+}
+
 std::vector<Token> tokenize(const std::string& sql) {
   std::vector<Token> out;
   size_t i = 0;
@@ -219,7 +223,7 @@ class Parser {
 
   Statement parse() {
     Statement stmt;
-    if (peek().kind == TokenKind::End) syntax_error("empty statement");
+    if (peek().kind == TokenKind::End) incomplete("empty statement");
     if (peek().kind != TokenKind::Ident) syntax_error("expected a statement keyword");
     const std::string kw = to_lower(peek().text);
     if (kw == "create") {
@@ -230,6 +234,15 @@ class Parser {
       }
     } else if (kw == "set") {
       parse_set_mode(stmt);
+    } else if (kw == "use") {
+      // Session database selection: accepted as a no-op, the engine has a
+      // single data directory.
+      advance();
+      if (peek().kind == TokenKind::End) incomplete("expected a database name");
+      advance();
+      stmt.kind = Statement::Kind::NoOp;
+    } else if (kw == "drop") {
+      parse_drop_table(stmt);
     } else if (kw == "insert") {
       parse_insert(stmt);
     } else if (kw == "select") {
@@ -287,7 +300,9 @@ class Parser {
   }
 
   void expect_kw(const char* kw) {
-    if (!accept_kw(kw)) syntax_error(std::string("expected '") + kw + "'");
+    if (accept_kw(kw)) return;
+    if (peek().kind == TokenKind::End) incomplete(std::string("expected '") + kw + "'");
+    syntax_error(std::string("expected '") + kw + "'");
   }
 
   bool accept(TokenKind kind) {
@@ -299,10 +314,13 @@ class Parser {
   }
 
   void expect(TokenKind kind, const char* what) {
-    if (!accept(kind)) syntax_error(std::string("expected ") + what);
+    if (accept(kind)) return;
+    if (peek().kind == TokenKind::End) incomplete(std::string("expected ") + what);
+    syntax_error(std::string("expected ") + what);
   }
 
   std::string expect_ident(const char* what) {
+    if (peek().kind == TokenKind::End) incomplete(std::string("expected ") + what);
     if (peek().kind != TokenKind::Ident) syntax_error(std::string("expected ") + what);
     std::string name = peek().text;
     advance();
@@ -310,6 +328,7 @@ class Parser {
   }
 
   int64_t expect_uint(const char* what) {
+    if (peek().kind == TokenKind::End) incomplete(std::string("expected ") + what);
     if (peek().kind != TokenKind::IntLit) syntax_error(std::string("expected ") + what);
     int64_t value = 0;
     if (!parse_int64(peek().text, value) || value < 0) {
@@ -389,7 +408,19 @@ class Parser {
         peek().kind == TokenKind::IntLit || peek().kind == TokenKind::FloatLit) {
       return parse_numeric_literal();
     }
+    if (peek().kind == TokenKind::End) incomplete("expected a literal");
     syntax_error("expected a literal");
+  }
+
+  void parse_drop_table(Statement& stmt) {
+    stmt.kind = Statement::Kind::DropTable;
+    expect_kw("drop");
+    expect_kw("table");
+    if (accept_kw("if")) {
+      expect_kw("exists");
+      stmt.if_exists = true;
+    }
+    stmt.table = expect_ident("a table name");
   }
 
   void parse_create_vector_index(Statement& stmt) {
@@ -406,11 +437,17 @@ class Parser {
   }
 
   void parse_set_mode(Statement& stmt) {
-    stmt.kind = Statement::Kind::SetMode;
     expect_kw("set");
-    if (!accept_kw("mode")) {
-      throw_sql_error(kErrNotSupported, "only SET mode = 'exact'|'ann' is supported");
+    if (!is_kw(peek(), "mode")) {
+      // Drivers commonly issue session settings (SET NAMES, SET autocommit,
+      // SET SESSION ...). They do not change engine behaviour, so accept them
+      // instead of failing the whole test case.
+      while (peek().kind != TokenKind::End) advance();
+      stmt.kind = Statement::Kind::NoOp;
+      return;
     }
+    stmt.kind = Statement::Kind::SetMode;
+    advance();
     accept(TokenKind::Eq);
     if (peek().kind == TokenKind::StrLit) {
       stmt.mode_value = peek().text;
@@ -427,8 +464,10 @@ class Parser {
     stmt.kind = Statement::Kind::CreateTable;
     expect_kw("create");
     expect_kw("table");
-    if (is_kw(peek(), "if")) {
-      throw_sql_error(kErrNotSupported, "IF NOT EXISTS is not supported");
+    if (accept_kw("if")) {
+      expect_kw("not");
+      expect_kw("exists");
+      stmt.if_not_exists = true;
     }
     stmt.table = expect_ident("a table name");
     expect(TokenKind::LParen, "'('");
@@ -540,6 +579,21 @@ class Parser {
         break;
       }
     }
+    if (!is_kw(peek(), "from")) {
+      // SELECT without FROM is only valid for literal items (e.g. SELECT 1).
+      // Anything else means the statement is still incomplete, which is how
+      // the newline-terminated fallback keeps multi-line statements buffered.
+      bool all_literal = !stmt.select_star && !stmt.select_items.empty();
+      for (const SelectItem& item : stmt.select_items) {
+        if (!item.is_literal) all_literal = false;
+      }
+      if (peek().kind == TokenKind::End && all_literal) {
+        stmt.no_from = true;
+        return;
+      }
+      if (peek().kind == TokenKind::End) incomplete("expected 'from'");
+      syntax_error("expected 'from'");
+    }
     expect_kw("from");
     stmt.table = expect_ident("a table name");
     if (accept_kw("where")) {
@@ -569,6 +623,17 @@ class Parser {
 
   SelectItem parse_select_item() {
     SelectItem item;
+    if (peek().kind == TokenKind::StrLit || peek().kind == TokenKind::IntLit ||
+        peek().kind == TokenKind::FloatLit || peek().kind == TokenKind::Minus ||
+        peek().kind == TokenKind::Plus) {
+      item.is_literal = true;
+      item.literal = parse_literal();
+      item.literal_text = item.literal.kind == Value::Kind::Int
+                              ? std::to_string(item.literal.i)
+                              : (item.literal.kind == Value::Kind::Str ? item.literal.s : "");
+      if (accept_kw("as")) item.alias = expect_ident("an alias");
+      return item;
+    }
     if (is_kw(peek(), "l2_distance")) {
       if (peek(1).kind != TokenKind::LParen) {
         syntax_error("expected '(' after L2_DISTANCE");
@@ -642,6 +707,21 @@ class Parser {
   void parse_delete(Statement& stmt) {
     stmt.kind = Statement::Kind::Delete;
     expect_kw("delete");
+    if (!is_kw(peek(), "from")) {
+      // SELECT without FROM is only valid for literal items (e.g. SELECT 1).
+      // Anything else means the statement is still incomplete, which is how
+      // the newline-terminated fallback keeps multi-line statements buffered.
+      bool all_literal = !stmt.select_star && !stmt.select_items.empty();
+      for (const SelectItem& item : stmt.select_items) {
+        if (!item.is_literal) all_literal = false;
+      }
+      if (peek().kind == TokenKind::End && all_literal) {
+        stmt.no_from = true;
+        return;
+      }
+      if (peek().kind == TokenKind::End) incomplete("expected 'from'");
+      syntax_error("expected 'from'");
+    }
     expect_kw("from");
     stmt.table = expect_ident("a table name");
     if (accept_kw("where")) {

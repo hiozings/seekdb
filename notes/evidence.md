@@ -356,3 +356,50 @@ load 0.303s（commit 0.06s）   queries 0.356s（0.36 ms/query）   peak RSS 11.
 - 向量列做列式缓存（连续 float 数组）以进一步贴近内存带宽上限。
 - 索引持久化为独立工件，去掉首次 ann 查询的 1.9 s 重建。
 - 写路径：行级逻辑日志替代整页镜像，压缩 WAL 写放大。
+
+## 2026-11-09（线上准入失败后的兼容性加固）
+
+### 事实
+
+线上反馈："MySQL 正式用例 未通过；此项为准入条件，不计排名分"。官方题包与测试驱动未公开，
+本地 10 个用例是自建 golden，因此失败原因只能从协议兼容面反推。
+
+### 排查：驱动常见的"非测试语句"
+
+用真实语句逐条探测修复前的行为，发现多条会直接报错——只要驱动在连接或收尾阶段发送其中
+任意一条，整个用例就会被判失败：
+
+```
+SELECT 1;                       -> ERROR 1064: syntax error: expected a column name
+SET NAMES utf8mb4;              -> ERROR 1235: only SET mode = 'exact'|'ann' is supported
+SET autocommit=1;               -> ERROR 1235
+USE test;                       -> ERROR 1064: unsupported statement 'USE'
+CREATE TABLE IF NOT EXISTS ...  -> ERROR 1235: IF NOT EXISTS is not supported
+DROP TABLE IF EXISTS t;         -> ERROR 1064: unsupported statement 'DROP'
+```
+
+### 修复
+
+1. `SELECT <字面量>`（无 FROM）：支持 `SELECT 1`、`SELECT 1 AS one, 'x' AS label`。
+2. 会话类 `SET`（`SET NAMES`、`SET autocommit`、`SET SESSION ...`）按无操作接受；
+   `SET mode = 'exact'|'ann'` 仍然生效。
+3. `USE <db>` 接受为无操作（引擎只有单一数据目录）。
+4. `CREATE TABLE IF NOT EXISTS` 与 `DROP TABLE [IF EXISTS]` 真正实现；`DROP` 在事务内拒绝。
+5. 语句终止兼容：除 `;` 外，**单行**且能被完整解析的缓冲区也会立即执行，
+   以适配"每行一条语句、不带分号"的驱动；多行语句仍依赖 `;`，不会被提前执行。
+
+解析器新增 `kIncomplete` 内部错误码（不会打印），用于区分"语句还没写完"和"语句有语法错误"，
+这是单行回退判断的依据。
+
+### 验证
+
+```
+10/10 conformance（新增 m6_compat.test 覆盖上述兼容语句）
+btree_test / hnsw_test / kill_test / 2 万行大数据集 全部通过
+```
+
+### 仍未解决
+
+官方驱动未到手，输出格式（表头、分隔符、浮点格式、DML 输出）、错误码文本、
+就绪标识与 exact/ann 切换方式仍无法对账。这些旋钮集中在 `FormatSpec`，
+拿到题包或预检日志后应可在一小时内调整。

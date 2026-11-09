@@ -148,6 +148,20 @@ bool Engine::open(std::string& error) {
   return true;
 }
 
+ResultSet Engine::exec_drop_table(const Statement& stmt) {
+  auto it = by_name_.find(lower(stmt.table));
+  if (it == by_name_.end()) {
+    if (stmt.if_exists) return ResultSet{};
+    throw_sql_error(kErrTableNotFound, "Unknown table '" + stmt.table + "'");
+  }
+  if (in_txn_) {
+    throw_sql_error(kErrNotSupported, "DROP TABLE is not supported inside a transaction");
+  }
+  drop_table(it->second);
+  if (!save_catalog()) throw_sql_error(kErrInternal, "cannot persist catalog");
+  return ResultSet{};
+}
+
 ResultSet Engine::exec_create_vector_index(const Statement& stmt) {
   TableState& table = require_table(stmt.table);
   const size_t column = require_column(table.meta, stmt.index_column);
@@ -440,6 +454,7 @@ bool Engine::matches(const TableMeta& meta, const std::vector<Value>& row,
 ResultSet Engine::exec_create(const Statement& stmt) {
   const std::string key = lower(stmt.table);
   if (by_name_.count(key) != 0) {
+    if (stmt.if_not_exists) return ResultSet{};
     throw_sql_error(kErrTableExists, "Table '" + stmt.table + "' already exists");
   }
   TableMeta meta;
@@ -616,6 +631,23 @@ ResultSet Engine::exec_update(const Statement& stmt) {
 }
 
 ResultSet Engine::exec_select(const Statement& stmt) {
+  if (stmt.no_from) {
+    ResultSet rs;
+    rs.has_rows = true;
+    std::vector<std::string> row;
+    for (const SelectItem& item : stmt.select_items) {
+      rs.columns.push_back(item.alias.empty() ? item.literal_text : item.alias);
+      switch (item.literal.kind) {
+        case Value::Kind::Int: row.push_back(std::to_string(item.literal.i)); break;
+        case Value::Kind::Float: row.push_back(format_double(item.literal.d, float_fmt_)); break;
+        case Value::Kind::Str: row.push_back(item.literal.s); break;
+        case Value::Kind::Vec: row.push_back(format_value(item.literal, ColumnType::Vector)); break;
+        default: row.push_back(std::string()); break;
+      }
+    }
+    rs.rows.push_back(std::move(row));
+    return rs;
+  }
   TableState& table = require_table(stmt.table);
   const TableMeta& meta = table.meta;
 
@@ -1183,6 +1215,7 @@ ResultSet Engine::execute(const Statement& stmt) {
   }
 
   if (stmt.kind == Statement::Kind::SetMode) return exec_set_mode(stmt);
+  if (stmt.kind == Statement::Kind::NoOp) return ResultSet{};
   // Reads never need a log record; they run directly in the current snapshot.
   if (stmt.kind == Statement::Kind::Select) return exec_select(stmt);
 
@@ -1194,6 +1227,7 @@ ResultSet Engine::execute(const Statement& stmt) {
     switch (stmt.kind) {
       case Statement::Kind::CreateTable: rs = exec_create(stmt); break;
       case Statement::Kind::CreateVectorIndex: rs = exec_create_vector_index(stmt); break;
+      case Statement::Kind::DropTable: rs = exec_drop_table(stmt); break;
       case Statement::Kind::Insert: rs = exec_insert(stmt); break;
       case Statement::Kind::Update: rs = exec_update(stmt); break;
       case Statement::Kind::Delete: rs = exec_delete(stmt); break;

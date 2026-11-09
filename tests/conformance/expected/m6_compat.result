@@ -1,0 +1,7 @@
+1
+1
+one	label
+1	x
+ERROR 1146: Table 'c' doesn't exist
+ERROR 1146: Table 'c' doesn't exist
+ERROR 1146: Unknown table 'c'

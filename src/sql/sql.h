@@ -9,6 +9,9 @@ namespace mvdb {
 // Error codes follow the MySQL convention so that the protocol layer can remap
 // them once the official task package publishes its own table.
 enum ErrCode : int {
+  // Internal only: the parser ran out of input mid-statement. Never printed;
+  // used by the driver loop to decide whether to keep buffering.
+  kIncomplete = -1,
   kErrSyntax = 1064,
   kErrUnknownColumn = 1054,
   kErrTableExists = 1050,
@@ -63,6 +66,10 @@ struct Condition {
 };
 
 struct SelectItem {
+  // A literal item is only meaningful in SELECT without FROM (e.g. SELECT 1).
+  bool is_literal = false;
+  Value literal;
+  std::string literal_text;
   bool is_distance = false;
   std::string column;       // source column, or argument of L2_DISTANCE
   std::string alias;        // optional AS alias
@@ -86,6 +93,8 @@ struct Statement {
     Rollback,
     CreateVectorIndex,
     SetMode,
+    DropTable,
+    NoOp,
   };
 
   Kind kind = Kind::Select;
@@ -116,6 +125,11 @@ struct Statement {
 
   // SET mode = 'exact' | 'ann'
   std::string mode_value;
+
+  // SELECT without FROM
+  bool no_from = false;
+  bool if_exists = false;
+  bool if_not_exists = false;
 };
 
 // Parses a textual vector literal such as "[1, 2, 3]".
