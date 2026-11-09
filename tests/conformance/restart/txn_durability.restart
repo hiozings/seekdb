@@ -1,0 +1,21 @@
+-- Commit survives a restart; rollback does not.
+CREATE TABLE t (id BIGINT PRIMARY KEY, v VARCHAR(8));
+BEGIN;
+INSERT INTO t VALUES (1, 'a');
+COMMIT;
+
+-- restart
+SELECT id, v FROM t ORDER BY id;
+
+BEGIN;
+INSERT INTO t VALUES (2, 'b');
+UPDATE t SET v = 'changed' WHERE id = 1;
+ROLLBACK;
+
+-- restart
+SELECT id, v FROM t ORDER BY id;
+
+BEGIN;
+INSERT INTO t VALUES (3, 'c');
+-- restart
+SELECT id, v FROM t ORDER BY id;

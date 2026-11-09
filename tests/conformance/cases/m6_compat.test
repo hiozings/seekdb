@@ -1,0 +1,21 @@
+-- Statements a MySQL-style driver may send around the actual test steps.
+SELECT 1;
+SELECT 1 AS one, 'x' AS label;
+SET NAMES utf8mb4;
+SET autocommit=1;
+SET SESSION sql_mode = 'STRICT_ALL_TABLES';
+USE test;
+
+-- IF NOT EXISTS is accepted; the second call is a no-op.
+CREATE TABLE IF NOT EXISTS c (id BIGINT PRIMARY KEY, v VARCHAR(4));
+CREATE TABLE IF NOT EXISTS c (id BIGINT PRIMARY KEY, v VARCHAR(4));
+INSERT INTO c VALUES (1, 'a');
+
+-- DROP TABLE removes the table and its files.
+DROP TABLE c;
+SELECT * FROM c;
+SELECT id FROM c;
+
+-- Dropping a missing table only fails when IF EXISTS is absent.
+DROP TABLE IF EXISTS c;
+DROP TABLE c;

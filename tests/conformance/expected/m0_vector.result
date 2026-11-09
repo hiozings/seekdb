@@ -1,0 +1,6 @@
+{}
+{"affected_rows":4}
+{"columns":["id","content","distance"],"rows":[[1,"事务与恢复",0.141421374149721],[4,"并列项",0.141421374149721]]}
+{"columns":["id","distance"],"rows":[[3,1]]}
+{"columns":["id","distance"],"rows":[[1,1],[2,1],[4,1]]}
+{"columns":["id","embedding"],"rows":[[3,"[0,0,1,0]"]]}

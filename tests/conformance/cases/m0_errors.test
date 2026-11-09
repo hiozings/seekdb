@@ -1,0 +1,32 @@
+-- Error handling: every rejected statement must report a code and leave no
+-- partial modification behind.
+CREATE TABLE t (id BIGINT PRIMARY KEY, v VARCHAR(4), e VECTOR(2));
+INSERT INTO t VALUES (1, 'abc', '[1,2]');
+
+-- Duplicate primary key.
+INSERT INTO t VALUES (1, 'x', '[1,2]');
+
+-- VARCHAR length is counted in Unicode characters (5 > 4).
+INSERT INTO t VALUES (2, 'abcde', '[1,2]');
+INSERT INTO t VALUES (3, '事务与恢复', '[1,2]');
+
+-- Vector dimension mismatch / non-finite value / float32 overflow.
+INSERT INTO t VALUES (4, 'ok', '[1,2,3]');
+INSERT INTO t VALUES (5, 'ok', '[1e40, 0]');
+
+-- Statement atomicity: the duplicate aborts the whole multi-row insert.
+INSERT INTO t VALUES (6, 'ok', '[1,0]'), (6, 'ok', '[0,1]');
+SELECT * FROM t ORDER BY id;
+
+-- Unsupported columns, tables and statements.
+SELECT nope FROM t;
+SELECT * FROM missing_table;
+ALTER TABLE t ADD COLUMN x BIGINT;
+MERGE INTO t VALUES (1);
+
+-- Unsupported operator.
+SELECT id FROM t WHERE id = 1 OR id = 2;
+
+-- A legal row still goes in afterwards.
+INSERT INTO t VALUES (7, '事务与恢', '[1,2]');
+SELECT id, v, e FROM t ORDER BY id;

@@ -1,0 +1,36 @@
+-- Vector index: creation, approximate search, and maintenance under writes.
+CREATE TABLE t (id BIGINT PRIMARY KEY, cat VARCHAR(8), v VECTOR(4));
+INSERT INTO t VALUES
+    (1, 'a', '[1, 0, 0, 0]'),
+    (2, 'a', '[0.9, 0.1, 0, 0]'),
+    (3, 'b', '[0, 1, 0, 0]'),
+    (4, 'b', '[0, 0, 1, 0]'),
+    (5, 'a', '[1, 0.2, 0, 0]');
+
+CREATE VECTOR INDEX t_v ON t (v);
+
+SET mode = 'ann';
+SELECT id, L2_DISTANCE(v, '[1, 0, 0, 0]') AS d FROM t ORDER BY d LIMIT 3;
+SELECT id, L2_DISTANCE(v, '[1, 0, 0, 0]') AS d FROM t WHERE cat = 'a' ORDER BY d LIMIT 2;
+
+-- New rows must be reachable through the index.
+INSERT INTO t VALUES (6, 'a', '[1.01, 0, 0, 0]');
+SELECT id, L2_DISTANCE(v, '[1, 0, 0, 0]') AS d FROM t ORDER BY d LIMIT 2;
+
+-- Updating a vector re-indexes it.
+UPDATE t SET v = '[2, 0, 0, 0]' WHERE id = 1;
+SELECT id, L2_DISTANCE(v, '[2, 0, 0, 0]') AS d FROM t ORDER BY d LIMIT 2;
+
+-- Deleted rows disappear from results.
+DELETE FROM t WHERE id = 6;
+SELECT id, L2_DISTANCE(v, '[1, 0, 0, 0]') AS d FROM t ORDER BY d LIMIT 2;
+
+-- exact mode must stay exact even though an index exists.
+SET mode = 'exact';
+SELECT id, L2_DISTANCE(v, '[1, 0, 0, 0]') AS d FROM t ORDER BY d LIMIT 2;
+
+-- ann without an index falls back to the exact path instead of failing.
+CREATE TABLE plain (id BIGINT PRIMARY KEY, v VECTOR(2));
+INSERT INTO plain VALUES (1, '[1, 0]'), (2, '[0, 1]');
+SET mode = 'ann';
+SELECT id, L2_DISTANCE(v, '[1, 0]') AS d FROM plain ORDER BY d LIMIT 1;

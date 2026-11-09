@@ -1,0 +1,14 @@
+-- The primary-key index must survive restarts: uniqueness still enforced and
+-- freed keys reusable after a delete.
+CREATE TABLE t (id BIGINT PRIMARY KEY, v VARCHAR(8));
+INSERT INTO t VALUES (1, 'a'), (2, 'b');
+
+-- restart
+INSERT INTO t VALUES (2, 'dup');
+SELECT id, v FROM t ORDER BY id;
+DELETE FROM t WHERE id = 1;
+
+-- restart
+INSERT INTO t VALUES (1, 'again');
+SELECT id, v FROM t ORDER BY id;
+SELECT id FROM t WHERE id = 1;
