@@ -18,6 +18,11 @@ add_executable(minivectordb
   src/sql/sql.cpp
   src/exec/engine.cpp
   src/protocol/protocol.cpp
+  src/storage/page.cpp
+  src/storage/buffer_pool.cpp
+  src/storage/heap_file.cpp
+  src/storage/record.cpp
+  src/storage/catalog.cpp
 )
 
 target_include_directories(minivectordb PRIVATE src)

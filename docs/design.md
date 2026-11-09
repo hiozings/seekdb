@@ -1,6 +1,6 @@
 # MiniVectorDB 简要设计
 
-> 状态：M0（协议层 + SQL 解析 + 内存执行骨架）。标「计划」的章节在 M1–M5 落地。
+> 状态：M1（协议层 + SQL 解析 + 持久化页存储 + 事务与重启一致）。标「计划」的章节在 M1b–M5 落地。
 
 ## 1. 目标与范围
 
@@ -14,21 +14,26 @@ main           进程入口：参数、信号、stdin 循环
   protocol     语句切分、线格式（FormatSpec）、结果/错误渲染、flush
   sql          词法 → 递归下降解析 → AST；错误码
   exec         规划与执行：过滤、投影、排序、TopK、L2 距离、类型强转
-  storage      页管理、buffer pool、堆文件、B+tree、catalog      （计划 M1）
-  txn          undo、WAL、checkpoint、恢复                      （计划 M3）
+  storage      页管理、buffer pool、堆文件、catalog（B+tree 计划 M1b）
+  txn          undo（内存链，已实现）、WAL、checkpoint、恢复     （WAL 计划 M3）
   vector       距离核、HNSW、索引工件与版本                      （计划 M4）
 ```
 
 约束：`protocol` 不依赖 `storage`；`exec` 仅经 `storage`/`txn` 接口访问数据；
 线格式的每个可变量都集中在 `FormatSpec`，题包发布后无需改动引擎。
 
-## 3. 记录布局（计划）
+## 3. 记录布局
 
-- 页大小 8 KiB，槽页存变长记录：`[长度 varint][标志][主键][列值...]`。
-- VARCHAR 存 UTF-8 字节（长度上限按码点校验）；VECTOR 存 `dim × 4` 字节连续区。
-- 主键索引：磁盘 B+tree（`pk → rid`），保证大于内存预算的数据集也能按主键定位。
-- buffer pool 有界（默认 32–64 MiB），使用 `pread/pwrite` 而非 `mmap`：
-  内存指标包含页缓存，`mmap` 会把文件全量计入峰值。
+- 页大小 8 KiB，槽页：页头 24 字节，槽目录从前往后增长，记录从后往前存放；
+  槽为 `(uint16 offset, uint16 len)`，`len == 0` 表示已删除且可复用。
+- 行按模式紧凑编码，无逐值类型标签：`BIGINT` 8 字节 LE、`VARCHAR` 长度+UTF-8 字节、
+  `VECTOR` `dim × 4` 字节的 float32 位模式。
+- 每表一个堆文件 `t<id>.heap`，页按需追加；记录 ID 为 `(page_id << 16) | slot`。
+- buffer pool 有界（默认 256 页 = 2 MiB），使用 `pread/pwrite` 而非 `mmap`：
+  内存指标包含页缓存，`mmap` 会把文件全量计入峰值。页以 `shared_ptr` 管理，
+  换出不会让调用方持有悬垂指针。
+- 主键索引：**当前**在打开时全表扫描重建内存哈希；**计划 M1b** 换成磁盘 B+tree，
+  以避免索引内存随行数线性增长。
 
 ## 4. 向量索引方案（计划）
 
@@ -64,8 +69,10 @@ NO-FORCE 策略避免每批重写数据文件；checkpoint 先刷页并 fsync，
 - 页头携带 `pageLSN`，redo 幂等，保证「恢复途中被强制终止」后再次启动收敛到同一状态。
 - 向量索引可从持久化记录重建；重建完成前不得报告就绪。
 
-## 8. 已实现功能（M0）
+## 8. 已实现功能（M0–M1）
 
+- 持久化：catalog 原子写入、每表堆文件、提交时刷脏页并 `fdatasync`、
+  正常关闭回滚未提交事务。
 - 完整 SQL 子集解析：`CREATE TABLE`、`INSERT`（多行）、`SELECT`（投影 / `*` / `L2_DISTANCE` /
   `WHERE` / `ORDER BY` / `LIMIT`）、`UPDATE`、`DELETE`、`BEGIN`/`COMMIT`/`ROLLBACK`。
 - 类型校验：`BIGINT`、`VARCHAR(n)`（Unicode 码点计数）、`VECTOR(n)`（float32、拒绝 NaN/Inf/维度不符/溢出）。
@@ -75,9 +82,11 @@ NO-FORCE 策略避免每批重写数据文件；checkpoint 先刷页并 fsync，
 
 ## 9. 已知限制
 
-- 数据仅存于内存，进程退出即丢失（M1 接入页存储，M3 接入 WAL）。
+- 尚无 WAL：强制终止时正在刷写的页可能撕裂，恢复依赖页结构而非日志重放（M3）。
+- 主键索引在打开时全表扫描重建，内存占用随行数线性增长（M1b 换 B+tree）。
 - 无向量索引，`ann` 模式尚未存在（M4）。
-- 事务快照为整库复制，数据量大时开销线性增长（M3 替换为 undo）。
+- 事务回滚依赖内存 undo 链：回滚需要的旧行镜像在事务期间驻留内存；
+  这是 undo 的正常代价，但大事务下的内存上限尚未实测（M3 会给出有界策略）。
 - 排序在内存中完成；超大结果集的 `ORDER BY` 未做外排（视题包用例决定是否实现）。
 - 错误码沿用 MySQL 约定，待题包发布后按官方表重映射。
 

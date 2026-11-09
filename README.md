@@ -2,8 +2,8 @@
 
 轻量单机向量数据库：基础 SQL、向量检索、持久化存储、事务与崩溃恢复。
 
-> 当前状态：里程碑 **M0**（协议层 + SQL 解析 + 内存执行骨架）。
-> 持久化、WAL 与崩溃恢复在 M1/M3 接入；README 的功能范围会随里程碑更新。
+> 当前状态：里程碑 **M1**（协议层 + SQL 解析 + 持久化页存储 + 事务与重启一致）。
+> 向量索引（M4）与 WAL 崩溃恢复（M3）尚未接入；README 会随里程碑更新。
 
 ## 1. 语言与构建
 
@@ -35,6 +35,7 @@ docker run --rm -i -v minivectordb-data:/data --cpus=2 --memory=2g minivectordb:
 - 输出为制表符分隔的文本：先一行列名（`SELECT`），再逐行数据。
 - 错误输出为 `ERROR <code>: <message>`，出错后会话继续。
 - 结束方式：标准输入 EOF，或输入 `quit` / `exit` / `\q`。
+- 诊断开关：`--probe` 把每条语句与执行结果打到 stderr；`--stats` 在退出时报告进程峰值内存。
 
 ### 3.1 线格式开关
 
@@ -50,7 +51,23 @@ docker run --rm -i -v minivectordb-data:/data --cpus=2 --memory=2g minivectordb:
 | `MVDB_READY` | 启动时打印的就绪标识 | 空（不打印） |
 | `MVDB_OK_FMT` | `MVDB_DML_OUTPUT=ok` 时输出的文本 | `OK` |
 
-## 4. 已支持的 SQL 子集
+## 4. 数据目录与持久化
+
+所有数据都在 `--data-dir`（评测环境为 `/data`）：
+
+```
+/data/
+  catalog.meta     表定义（原子写入：临时文件 + fsync + rename）
+  t<id>.heap       每表一个堆文件，8 KiB 槽页
+```
+
+- 行按模式紧凑编码：`BIGINT` 8 字节、`VARCHAR` 长度+UTF-8 字节、`VECTOR` `dim×4` 字节。
+- 页缓存在内存中，默认 256 页（2 MiB）；**数据量超过缓存预算时按页换入换出，不依赖全量载入内存**。
+- 未显式 `BEGIN` 的写语句自动提交：语句成功后把脏页写回并 `fdatasync` 才返回。
+- 进程正常退出或收到 `quit` 时，**未提交事务先回滚**再落盘。
+- 重启后表定义、数据与主键唯一性均恢复。
+
+## 5. 已支持的 SQL 子集
 
 | 类别 | 语法 |
 | --- | --- |
@@ -67,10 +84,10 @@ docker run --rm -i -v minivectordb-data:/data --cpus=2 --memory=2g minivectordb:
 - 每表最多一个 `VECTOR` 列；向量为 `float32`，拒绝 NaN、Infinity、维度不符与 `float32` 溢出。
 - `VARCHAR(n)` 的 `n` 按 Unicode 码点计数，字符串比较按码点顺序（UTF-8 字节序等价）。
 - 距离按存储后的 `float32` 向量计算；`L2_DISTANCE` 升序，距离并列时按主键升序。
-- 未显式 `BEGIN` 的写语句自动提交。
+- 语句失败不留下任何部分修改；事务内的查询与向量检索都能看到本事务已完成的修改。
 - 不支持：`NULL`、`JOIN`、聚合、子查询、`ALTER TABLE`、外键、嵌套事务、`OR`、`DROP` 等，均返回明确错误而不是静默执行。
 
-## 5. 错误码
+## 6. 错误码
 
 沿用 MySQL 约定，便于题包发布后按需重映射：
 
@@ -89,7 +106,7 @@ docker run --rm -i -v minivectordb-data:/data --cpus=2 --memory=2g minivectordb:
 | 1366 | 取值类型错误（维度不符等） |
 | 1105 | 内部错误 |
 
-## 6. 从空数据目录开始的示例
+## 7. 从空数据目录开始的示例
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
@@ -136,16 +153,28 @@ id
 3
 ```
 
-## 7. 本地验证
+退出后重新启动同一 `--data-dir`，`SELECT` 仍返回上面的三行——数据已持久化。
+
+## 8. 本地验证
 
 ```bash
-python3 tests/conformance/driver.py        # 全部用例
-python3 tests/conformance/driver.py -v     # 失败时显示差异
-python3 tests/conformance/driver.py --update  # 重新生成期望输出
+python3 tests/conformance/driver.py            # SQL 与重启一致性用例
+python3 tests/conformance/driver.py -v         # 失败时显示差异
+python3 tests/conformance/driver.py --update   # 重新生成期望输出
+python3 tests/storage/large_dataset.py --rows 20000 --dim 128   # 超出页缓存的数据集
 ```
 
-## 8. 测试与设计文档
+## 9. 测试与设计文档
 
 - `docs/design.md`：存储布局、索引、事务、提交持久化与恢复流程
-- `tests/conformance/`：SQL 级一致性用例
+- `tests/conformance/`：SQL 级一致性用例（`cases/` 单进程、`restart/` 跨重启）
+- `tests/storage/`：大数据集与页缓存压力测试
 - `notes/evidence.md`：开发过程中的验证记录
+
+## 10. 已知限制
+
+- 尚无 WAL：进程被强制终止时，正在刷写的页可能只写了一半，恢复依赖页内结构而非日志重放（M3 解决）。
+- 主键索引在启动时通过全表扫描重建，内存占用与行数线性相关（M1b 迁移到磁盘 B+tree）。
+- 尚无向量索引，`ANN` 模式不存在，所有向量检索均为精确扫描（M4）。
+- 排序与结果集在内存中完成；超大结果集的 `ORDER BY` 未做外排。
+- 错误码为 MySQL 约定的推测值，待题包发布后按官方表重映射。

@@ -84,3 +84,55 @@
 - M1：页存储、B+tree 主键索引、catalog 持久化，重启后数据一致。
 - M3：undo + WAL + checkpoint，kill -9 崩溃恢复验证。
 - M4：HNSW 与校准脚本，留出集 Recall@10 验证。
+
+## 2026-11-09（M1：持久化存储）
+
+### 决策
+
+| 决策 | 理由 |
+| --- | --- |
+| 页式存储 + 有界 buffer pool（256 页 = 2 MiB） | 题包明确要求支持超过内存预算的数据集，不能全量载入 |
+| `pread/pwrite` 而非 `mmap` | 平台的 M 指标含页缓存，`mmap` 会把整个文件计入内存峰值 |
+| 页用 `shared_ptr` 管理 | 缓存换出不能使调用方手里的页指针失效 |
+| 行编码按模式紧凑存放（无逐值类型标签） | 减少 I/O 字节，直接影响性能项的 B 指标 |
+| 主键索引先用"打开时全表扫描重建"的临时方案 | 先打通持久化链路；M1b 再换磁盘 B+tree，避免一次性引入两类风险 |
+| 正常关闭时回滚未提交事务 | 赛题要求；实现后由 `txn_durability.restart` 用例固化 |
+
+### 实施与验证
+
+1. 新增 `src/storage/`：槽页、页缓存、堆文件、catalog、行编解码。
+2. 执行引擎改写为存储驱动（`src/exec/engine.*`），事务回滚从"整库快照"改为内存 undo 链。
+3. 一致性用例扩展为 6 组，新增跨重启用例（`tests/conformance/restart/`）：
+
+   ```
+   [ok] m0_basic.test      [ok] m0_errors.test   [ok] m0_txn.test
+   [ok] m0_vector.test     [ok] persistence.restart   [ok] txn_durability.restart
+   6/6 passed
+   ```
+
+4. 大数据集验证（10.4 MiB 数据、2 MiB 页缓存）：
+
+   ```
+   rows=20000 dim=128 batch=100
+   insert wall time = 2.08s, peak RSS = 8.4 MiB
+   verify wall time = 0.08s, peak RSS = 11.3 MiB
+   [ok] first id / last id / point lookup / full scan row count / full scan is ordered
+   ```
+
+### 发现并修复的两个真实缺陷
+
+1. **RID 哨兵值错误**：最初用 `rid == 0` 表示分配失败，但 `(page 0, slot 0)` 的 RID 本身就是 0，
+   导致第一条记录必然被判失败（现象：`ERROR 1105: cannot allocate space for row`）。
+   改为独立的 `kInvalidRid` 哨兵。
+2. **未提交事务在进程退出时会落盘**：进程读到 EOF 直接退出，析构里的 `sync()` 把脏页写了下去，
+   重启后能看到未提交的插入（由 `txn_durability.restart` 第三段捕获）。
+   修复：新增 `Engine::shutdown()`，先回滚未提交事务再刷盘，`main` 在退出前调用。
+
+   第二个缺陷值得记录：它正是"正常关闭须回滚未提交事务"这条赛题要求对应的实现点，
+   而用例里加入"提交 → 重启 → 未提交 → 重启"的对照才让它暴露。
+
+### 计划（未执行）
+
+- M1b：磁盘 B+tree 主键索引，替换启动时的全表扫描重建。
+- M3：WAL + checkpoint，覆盖强制终止（kill -9）场景。
+- M4：HNSW 与校准脚本。

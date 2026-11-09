@@ -1,6 +1,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -14,12 +15,26 @@ namespace {
 struct Options {
   std::string data_dir = "/data";
   bool probe = false;
+  bool stats = false;
 };
+
+// Reports this process's own peak RSS on stderr. Used by local profiling only;
+// the platform measures memory from cgroup counters.
+void report_peak_rss() {
+  std::ifstream status("/proc/self/status");
+  std::string line;
+  while (std::getline(status, line)) {
+    if (line.rfind("VmHWM:", 0) == 0) {
+      std::fprintf(stderr, "[stats] peak_rss_kb=%s\n", line.c_str() + 6);
+      return;
+    }
+  }
+}
 
 void print_help() {
   std::fprintf(stderr,
                "minivectordb - lightweight vector database\n"
-               "Usage: minivectordb [--data-dir DIR] [--probe] [--help] [--version]\n"
+               "Usage: minivectordb [--data-dir DIR] [--probe] [--stats] [--help] [--version]\n"
                "\n"
                "Reads SQL statements from stdin, writes results to stdout and\n"
                "diagnostics to stderr. One statement is terminated by ';'.\n"
@@ -83,6 +98,8 @@ int main(int argc, char** argv) {
       opts.data_dir = arg.substr(std::strlen("--data-dir="));
     } else if (arg == "--probe") {
       opts.probe = true;
+    } else if (arg == "--stats") {
+      opts.stats = true;
     } else if (arg == "--help" || arg == "-h") {
       print_help();
       return 0;
@@ -98,12 +115,19 @@ int main(int argc, char** argv) {
   std::signal(SIGPIPE, SIG_IGN);
 
   mvdb::FormatSpec spec = mvdb::load_format_spec_from_env();
-  mvdb::Engine engine;
+  mvdb::Engine engine(opts.data_dir);
+  {
+    std::string error;
+    if (!engine.open(error)) {
+      std::fprintf(stderr, "fatal: %s\n", error.c_str());
+      return 1;
+    }
+  }
   engine.set_float_format(spec.float_format);
   mvdb::OutputWriter writer(spec);
 
   if (opts.probe) {
-    std::fprintf(stderr, "[probe] data-dir=%s persistence=in-memory (M0)\n", opts.data_dir.c_str());
+    std::fprintf(stderr, "[probe] data-dir=%s\n", opts.data_dir.c_str());
   }
   writer.write_ready();
 
@@ -130,5 +154,7 @@ int main(int argc, char** argv) {
     }
   }
   writer.flush();
+  engine.shutdown();
+  if (opts.stats) report_peak_rss();
   return 0;
 }
