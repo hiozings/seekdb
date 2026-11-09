@@ -26,7 +26,7 @@ RUN cmake -S . -B build \
 # ---- runtime stage ---------------------------------------------------------
 FROM ubuntu:24.04
 
-RUN mkdir -p /data
+RUN mkdir -p /data && chmod 777 /data
 
 COPY --from=build /src/build/minivectordb /usr/local/bin/minivectordb
 

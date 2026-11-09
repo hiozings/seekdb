@@ -17,6 +17,7 @@ struct Options {
   std::string data_dir = "/data";
   bool probe = false;
   bool stats = false;
+  std::string mode;  // optional: exact | ann
 };
 
 // Reports this process's own peak RSS and block I/O on stderr. Used by local
@@ -138,6 +139,10 @@ int main(int argc, char** argv) {
       opts.probe = true;
     } else if (arg == "--stats") {
       opts.stats = true;
+    } else if (arg == "--mode" && i + 1 < argc) {
+      opts.mode = argv[++i];
+    } else if (arg.rfind("--mode=", 0) == 0) {
+      opts.mode = arg.substr(std::strlen("--mode="));
     } else if (arg == "--help" || arg == "-h") {
       print_help();
       return 0;
@@ -145,8 +150,9 @@ int main(int argc, char** argv) {
       std::printf("minivectordb 0.1.0\n");
       return 0;
     } else {
-      std::fprintf(stderr, "error: unknown argument '%s' (see --help)\n", arg.c_str());
-      return 2;
+      // An unrecognised argument must not kill the process: the driver may pass
+      // options this build does not know about. Warn and keep going.
+      std::fprintf(stderr, "warning: ignoring unknown argument '%s'\n", arg.c_str());
     }
   }
 
@@ -159,6 +165,18 @@ int main(int argc, char** argv) {
     pool_pages = std::strtoul(value, nullptr, 10);
   }
   mvdb::Engine engine(opts.data_dir, pool_pages);
+  std::string mode = opts.mode;
+  if (mode.empty()) {
+    if (const char* value = std::getenv("MVDB_MODE")) mode = value;
+  }
+  if (!mode.empty()) {
+    const std::string normalized = mvdb::to_lower(mode);
+    if (normalized == "ann") {
+      engine.set_mode(mvdb::Engine::QueryMode::Ann);
+    } else if (normalized == "exact") {
+      engine.set_mode(mvdb::Engine::QueryMode::Exact);
+    }
+  }
   {
     std::string error;
     if (!engine.open(error)) {
