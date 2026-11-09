@@ -1,5 +1,6 @@
 #include "exec/engine.h"
 
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -7,6 +8,8 @@
 #include <cerrno>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
+#include <cstdio>
 #include <set>
 #include <utility>
 
@@ -53,6 +56,7 @@ Engine::Engine(std::string data_dir, size_t pool_pages)
     : data_dir_(std::move(data_dir)), pool_pages_(pool_pages) {
   if (!data_dir_.empty() && data_dir_.back() == '/') data_dir_.pop_back();
   catalog_path_ = data_dir_ + "/catalog.meta";
+  wal_path_ = data_dir_ + "/wal.log";
 }
 
 Engine::~Engine() {
@@ -64,14 +68,20 @@ Engine::~Engine() {
     if (entry.second->heap) entry.second->heap->close();
     if (entry.second->pk_index) entry.second->pk_index->close();
   }
+  wal_.close();
 }
 
 void Engine::shutdown() {
   if (in_txn_) {
     rollback_to(0);
+    release_current_txn();
     in_txn_ = false;
   }
-  flush_all();
+  if (!flush_all()) return;
+  // Every page is durable now, so the log has no work left for the next start.
+  wal_.log_checkpoint(wal_.allocate_lsn());
+  wal_.sync();
+  wal_.truncate();
 }
 
 std::string Engine::heap_path(uint32_t table_id) const {
@@ -94,6 +104,10 @@ bool Engine::open(std::string& error) {
     error = "cannot read catalog '" + catalog_path_ + "'";
     return false;
   }
+  if (!wal_.open(wal_path_, error)) return false;
+  // Replay happens against raw file descriptors, before any heap or index is
+  // opened, so no cached page can shadow a replayed image.
+  if (!recover(metas, error)) return false;
   for (TableMeta& meta : metas) {
     auto state = std::make_unique<TableState>();
     state->meta = meta;
@@ -633,16 +647,143 @@ bool Engine::save_catalog() {
   return ::mvdb::save_catalog(catalog_path_, metas, next_table_id_);
 }
 
+void Engine::begin_txn_scope() {
+  current_txn_ = next_txid_++;
+  for (auto& entry : tables_) {
+    if (entry.second->heap) entry.second->heap->set_current_txn(current_txn_);
+    if (entry.second->pk_index) entry.second->pk_index->set_current_txn(current_txn_);
+  }
+}
+
+void Engine::release_current_txn() {
+  if (current_txn_ == 0) return;
+  for (auto& entry : tables_) {
+    if (entry.second->heap) entry.second->heap->release_txn(current_txn_);
+    if (entry.second->pk_index) entry.second->pk_index->release_txn(current_txn_);
+  }
+  current_txn_ = 0;
+}
+
+void Engine::commit_txn() {
+  if (current_txn_ == 0) return;
+  std::vector<std::pair<uint32_t, BufferPool::DirtyPage>> pages;
+  for (auto& entry : tables_) {
+    const uint32_t table_id = entry.first;
+    if (entry.second->heap) {
+      for (auto& dirty : entry.second->heap->collect_dirty(current_txn_)) {
+        pages.emplace_back(table_id * 2, dirty);
+      }
+    }
+    if (entry.second->pk_index) {
+      for (auto& dirty : entry.second->pk_index->collect_dirty(current_txn_)) {
+        pages.emplace_back(table_id * 2 + 1, dirty);
+      }
+    }
+  }
+  bool ok = true;
+  for (auto& item : pages) {
+    const uint64_t lsn = wal_.allocate_lsn();
+    item.second.page->set_lsn(lsn);
+    ok = ok && wal_.log_page_image(current_txn_, item.first, item.second.page_id, lsn,
+                                   item.second.page->raw(), Page::kPageSize);
+    if (!ok) break;
+  }
+  ok = ok && wal_.log_commit(current_txn_) && wal_.sync();
+  release_current_txn();
+  if (!ok) throw_sql_error(kErrInternal, "write-ahead log failure");
+}
+
+namespace {
+
+bool pwrite_all(int fd, const char* data, size_t len, off_t offset) {
+  size_t written = 0;
+  while (written < len) {
+    const ssize_t n = ::pwrite(fd, data + written, len - written, offset + static_cast<off_t>(written));
+    if (n <= 0) {
+      if (n < 0 && errno == EINTR) continue;
+      return false;
+    }
+    written += static_cast<size_t>(n);
+  }
+  return true;
+}
+
+}  // namespace
+
+bool Engine::recover(const std::vector<TableMeta>& metas, std::string& error) {
+  std::set<uint64_t> committed;
+  if (!wal_.scan([&](const Wal::Record& record) {
+        if (record.type == Wal::Type::kCommit) committed.insert(record.txid);
+        return true;
+      })) {
+    error = "cannot read write-ahead log";
+    return false;
+  }
+  if (committed.empty()) {
+    // Nothing was committed past the last checkpoint: data files are already
+    // consistent because uncommitted pages are never written.
+    wal_.truncate();
+    return true;
+  }
+
+  std::set<uint32_t> known_tables;
+  for (const TableMeta& meta : metas) known_tables.insert(meta.id);
+  std::map<uint32_t, int> fds;  // file tag -> descriptor, -1 after a failure
+
+  bool ok = true;
+  wal_.scan([&](const Wal::Record& record) {
+    if (!ok) return false;
+    if (record.type != Wal::Type::kPageImage) return true;
+    if (committed.count(record.txid) == 0) return true;
+    const uint32_t table_id = record.file_tag / 2;
+    if (known_tables.count(table_id) == 0) return true;  // dropped table
+    auto it = fds.find(record.file_tag);
+    if (it == fds.end()) {
+      const bool is_index = (record.file_tag % 2) == 1;
+      const std::string path = is_index ? btree_path(table_id) : heap_path(table_id);
+      const int fd = ::open(path.c_str(), O_RDWR | O_CREAT, 0644);
+      it = fds.emplace(record.file_tag, fd).first;
+    }
+    const int fd = it->second;
+    if (fd < 0) return true;
+    const off_t offset = static_cast<off_t>(record.page_id) * static_cast<off_t>(Page::kPageSize);
+    uint64_t on_disk_lsn = 0;
+    if (::pread(fd, &on_disk_lsn, sizeof(on_disk_lsn), offset + 8) ==
+        static_cast<ssize_t>(sizeof(on_disk_lsn))) {
+      if (on_disk_lsn >= record.lsn) return true;  // idempotent replay
+    }
+    if (!pwrite_all(fd, record.payload, record.payload_len, offset)) {
+      ok = false;
+      return false;
+    }
+    return true;
+  });
+
+  for (auto& entry : fds) {
+    if (entry.second >= 0) {
+      ::fdatasync(entry.second);
+      ::close(entry.second);
+    }
+  }
+  if (!ok) {
+    error = "cannot apply write-ahead log";
+    return false;
+  }
+  wal_.truncate();
+  return true;
+}
+
 ResultSet Engine::execute(const Statement& stmt) {
   switch (stmt.kind) {
     case Statement::Kind::Begin:
       if (in_txn_) throw_sql_error(kErrNotSupported, "nested transactions are not supported");
       in_txn_ = true;
       undo_.clear();
+      begin_txn_scope();
       return ResultSet{};
     case Statement::Kind::Commit:
       if (in_txn_) {
-        flush_all();
+        commit_txn();
         undo_.clear();
         in_txn_ = false;
       }
@@ -650,7 +791,8 @@ ResultSet Engine::execute(const Statement& stmt) {
     case Statement::Kind::Rollback:
       if (in_txn_) {
         rollback_to(0);
-        flush_all();
+        release_current_txn();
+        undo_.clear();
         in_txn_ = false;
       }
       return ResultSet{};
@@ -659,6 +801,7 @@ ResultSet Engine::execute(const Statement& stmt) {
   }
 
   const size_t mark = undo_.size();
+  begin_txn_scope();
   try {
     ResultSet rs;
     switch (stmt.kind) {
@@ -670,13 +813,13 @@ ResultSet Engine::execute(const Statement& stmt) {
       default: throw_sql_error(kErrInternal, "unhandled statement kind");
     }
     if (!in_txn_) {
-      flush_all();
+      commit_txn();
       undo_.clear();
     }
     return rs;
   } catch (...) {
     rollback_to(mark);
-    if (!in_txn_) flush_all();
+    if (!in_txn_) release_current_txn();
     throw;
   }
 }

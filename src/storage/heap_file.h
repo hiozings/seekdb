@@ -42,6 +42,12 @@ class HeapFile {
   // Writes dirty pages back and fsyncs.
   bool sync();
 
+  // Transaction ownership, forwarded to the page cache.
+  void set_current_txn(uint64_t txid);
+  void release_txn(uint64_t txid);
+  std::vector<BufferPool::DirtyPage> collect_dirty(uint64_t txid);
+
+
  private:
   bool ensure_capacity(uint32_t upto_page);
   RID insert_into(uint32_t page_id, const std::string& record);

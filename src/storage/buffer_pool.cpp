@@ -54,6 +54,9 @@ bool BufferPool::evict_one() {
   uint32_t victim_id = 0;
   for (auto& entry : frames_) {
     if (entry.second.page.use_count() > 1) continue;
+    // Never evict a page that belongs to an active transaction: its bytes are
+    // not in the log yet, so they must not reach a data file.
+    if (entry.second.page->owner_txn() != 0) continue;
     if (victim == nullptr || entry.second.tick < victim->tick) {
       victim = &entry.second;
       victim_id = entry.first;
@@ -80,7 +83,25 @@ std::shared_ptr<Page> BufferPool::fetch(uint32_t page_id) {
 }
 
 void BufferPool::mark_dirty(const std::shared_ptr<Page>& page) {
-  if (page) page->set_dirty(true);
+  if (!page) return;
+  page->set_dirty(true);
+  if (current_txn_ != 0) page->set_owner_txn(current_txn_);
+}
+
+std::vector<BufferPool::DirtyPage> BufferPool::collect_dirty(uint64_t txid) {
+  std::vector<DirtyPage> out;
+  for (auto& entry : frames_) {
+    if (entry.second.page->dirty() && entry.second.page->owner_txn() == txid) {
+      out.push_back(DirtyPage{entry.first, entry.second.page});
+    }
+  }
+  return out;
+}
+
+void BufferPool::release_txn(uint64_t txid) {
+  for (auto& entry : frames_) {
+    if (entry.second.page->owner_txn() == txid) entry.second.page->set_owner_txn(0);
+  }
 }
 
 void BufferPool::flush_all() {

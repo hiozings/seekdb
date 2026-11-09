@@ -2,7 +2,7 @@
 
 轻量单机向量数据库：基础 SQL、向量检索、持久化存储、事务与崩溃恢复。
 
-> 当前状态：里程碑 **M1b**（协议层 + SQL 解析 + 持久化页存储 + 磁盘 B+tree 主键索引 + 事务与重启一致）。
+> 当前状态：里程碑 **M3**（协议层 + SQL 解析 + 持久化页存储 + B+tree 主键索引 + WAL 事务与崩溃恢复）。
 > 向量索引（M4）与 WAL 崩溃恢复（M3）尚未接入；README 会随里程碑更新。
 
 ## 1. 语言与构建
@@ -60,11 +60,18 @@ docker run --rm -i -v minivectordb-data:/data --cpus=2 --memory=2g minivectordb:
   catalog.meta     表定义（原子写入：临时文件 + fsync + rename）
   t<id>.heap       每表一个堆文件，8 KiB 槽页
   t<id>.btree      主键索引（B+tree，page 0 为元数据页）
+  wal.log          预写日志（整页镜像 + 提交记录，CRC32 校验）
+  wal.log.epoch    日志纪元，保证页 LSN 跨重启单调
 ```
 
 - 行按模式紧凑编码：`BIGINT` 8 字节、`VARCHAR` 长度+UTF-8 字节、`VECTOR` `dim×4` 字节。
 - 页缓存在内存中，默认 256 页（2 MiB）；**数据量超过缓存预算时按页换入换出，不依赖全量载入内存**。
-- 未显式 `BEGIN` 的写语句自动提交：语句成功后把脏页写回并 `fdatasync` 才返回。
+- 未显式 `BEGIN` 的写语句自动提交：提交时把本事务修改过的页以整页镜像写入 WAL，
+  追加 COMMIT 记录并 `fdatasync`，之后才返回成功。
+- 事务未提交的页**不允许被换出到数据文件**（页缓存拒绝逐出有属主的页），
+  因此磁盘上只存在已提交的数据，恢复不需要 undo。
+- 重启时重放已提交事务的页镜像；页头 LSN 保证重放幂等，恢复过程中被再次终止也能收敛。
+- 崩溃模型限定为进程被强制终止（赛题定义），不模拟断电，因此页写入未做校验和。
 - 进程正常退出或收到 `quit` 时，**未提交事务先回滚**再落盘。
 - 重启后表定义、数据与主键唯一性均恢复；主键索引直接从 `.btree` 文件加载，
   **不扫描堆文件**，因此启动成本与行数无关。
@@ -165,6 +172,7 @@ python3 tests/conformance/driver.py            # SQL 与重启一致性用例
 python3 tests/conformance/driver.py -v         # 失败时显示差异
 python3 tests/conformance/driver.py --update   # 重新生成期望输出
 python3 tests/storage/large_dataset.py --rows 20000 --dim 128   # 超出页缓存的数据集
+python3 tests/crash/kill_test.py --trials 8     # 强制终止后的恢复不变量
 ```
 
 ## 9. 测试与设计文档
@@ -176,7 +184,8 @@ python3 tests/storage/large_dataset.py --rows 20000 --dim 128   # 超出页缓�
 
 ## 10. 已知限制
 
-- 尚无 WAL：进程被强制终止时，正在刷写的页可能只写了一半，恢复依赖页内结构而非日志重放（M3 解决）。
+- WAL 只在正常关闭或恢复完成后截断，长时间大批量写入期间日志会持续增长（M5 规划周期性 checkpoint）。
+- 每次提交都写整页镜像；大事务的日志量约为脏页数的 8 KiB 倍，行级逻辑日志可进一步压缩（M5）。
 - B+tree 删除只摘除键，不做节点合并；长期大量删除后索引文件不会收缩。
 - 尚无向量索引，`ANN` 模式不存在，所有向量检索均为精确扫描（M4）。
 - 排序与结果集在内存中完成；超大结果集的 `ORDER BY` 未做外排。

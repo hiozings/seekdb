@@ -24,6 +24,7 @@ add_executable(minivectordb
   src/storage/record.cpp
   src/storage/catalog.cpp
   src/storage/btree.cpp
+  src/txn/wal.cpp
 )
 
 target_include_directories(minivectordb PRIVATE src)
@@ -40,6 +41,7 @@ if(MVDB_BUILD_TESTS)
   add_executable(btree_test
     tests/storage/btree_test.cpp
     src/storage/btree.cpp
+  src/txn/wal.cpp
     src/storage/buffer_pool.cpp
     src/storage/page.cpp
   )

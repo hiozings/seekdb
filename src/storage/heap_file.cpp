@@ -128,4 +128,17 @@ bool HeapFile::sync() {
   return pool_->sync();
 }
 
+void HeapFile::set_current_txn(uint64_t txid) {
+  if (pool_) pool_->set_current_txn(txid);
+}
+
+void HeapFile::release_txn(uint64_t txid) {
+  if (pool_) pool_->release_txn(txid);
+}
+
+std::vector<BufferPool::DirtyPage> HeapFile::collect_dirty(uint64_t txid) {
+  if (!pool_) return {};
+  return pool_->collect_dirty(txid);
+}
+
 }  // namespace mvdb

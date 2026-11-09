@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/xiangyv/proj/seekdb-round2/build-asan/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

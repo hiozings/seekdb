@@ -25,9 +25,11 @@ inline uint16_t rid_slot(RID rid) { return static_cast<uint16_t>(rid & 0xFFFFu);
 //  off 2  uint16 free_start     first free byte after the slot directory
 //  off 4  uint16 free_end       first byte of the record area
 //  off 6  uint16 flags
-//  off 8  uint32 next_page      reserved for page chains
-//  off 12 uint64 lsn            reserved for write-ahead logging
-//  off 20 4 bytes reserved
+//  off 8  uint64 lsn            write-ahead log position of the last image
+//  off 16 8 bytes reserved
+//
+// The LSN lives at offset 8 in both slotted pages and B+tree nodes so that
+// recovery can compare it without knowing the page layout.
 //
 // Each slot is 4 bytes: uint16 offset, uint16 length. length == 0 marks a dead
 // slot, which is reusable by a later insert.
@@ -58,6 +60,11 @@ class Page {
 
   bool dirty() const { return dirty_; }
   void set_dirty(bool value) { dirty_ = value; }
+  uint64_t lsn() const;
+  void set_lsn(uint64_t value);
+  // Transaction that owns the pending modification; 0 means "already logged".
+  uint64_t owner_txn() const { return owner_txn_; }
+  void set_owner_txn(uint64_t txid) { owner_txn_ = txid; }
   uint32_t page_id() const { return page_id_; }
   void set_page_id(uint32_t id) { page_id_ = id; }
 
@@ -77,6 +84,7 @@ class Page {
   char data_[kPageSize];
   bool dirty_ = false;
   uint32_t page_id_ = 0;
+  uint64_t owner_txn_ = 0;
 };
 
 }  // namespace mvdb

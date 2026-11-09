@@ -104,15 +104,25 @@ void BTree::init_empty_leaf(uint32_t page_id) {
   pool_->mark_dirty(page);
 }
 
+// The meta page deliberately leaves bytes [8, 16) to the page LSN written by
+// the commit path; everything else lives at 16 and above.
 void BTree::load_meta() {
   auto page = pool_->fetch(0);
   const char* d = page->raw();
-  root_ = read_u32(d + 12);
-  height_ = read_u32(d + 16);
-  const uint32_t flags = read_u32(d + 20);
+  const uint32_t version = read_u32(d + 16);
+  if (version != kMetaVersion) {
+    root_ = 0;
+    height_ = 0;
+    built_ = false;
+    count_ = 0;
+    return;
+  }
+  root_ = read_u32(d + 20);
+  height_ = read_u32(d + 24);
+  const uint32_t flags = read_u32(d + 28);
   built_ = (flags & kMetaBuiltFlag) != 0;
   uint64_t count = 0;
-  std::memcpy(&count, d + 24, sizeof(count));
+  std::memcpy(&count, d + 32, sizeof(count));
   count_ = count;
 }
 
@@ -121,11 +131,11 @@ void BTree::store_meta() {
   char* d = page->raw();
   page->zero();
   std::memcpy(d, kMetaMagic, sizeof(kMetaMagic));
-  write_u32(d + 8, kMetaVersion);
-  write_u32(d + 12, root_);
-  write_u32(d + 16, height_);
-  write_u32(d + 20, built_ ? kMetaBuiltFlag : 0);
-  std::memcpy(d + 24, &count_, sizeof(count_));
+  write_u32(d + 16, kMetaVersion);
+  write_u32(d + 20, root_);
+  write_u32(d + 24, height_);
+  write_u32(d + 28, built_ ? kMetaBuiltFlag : 0);
+  std::memcpy(d + 32, &count_, sizeof(count_));
   pool_->mark_dirty(page);
 }
 
@@ -146,6 +156,21 @@ bool BTree::open() {
     store_meta();
   } else {
     load_meta();
+    if (root_ == 0 || height_ == 0) {
+      // Unreadable or pre-LSN meta page: start the index over. `built_` stays
+      // false so the engine repopulates it from the heap.
+      if (::ftruncate(fd_, 0) != 0) return false;
+      ::lseek(fd_, 0, SEEK_SET);
+      page_count_ = 0;
+      pool_->clear();
+      alloc_page();
+      root_ = alloc_page();
+      init_empty_leaf(root_);
+      height_ = 1;
+      count_ = 0;
+      built_ = false;
+      store_meta();
+    }
   }
   return true;
 }
@@ -170,6 +195,19 @@ bool BTree::mark_built() {
 }
 
 bool BTree::sync() { return pool_ ? pool_->sync() : false; }
+
+void BTree::set_current_txn(uint64_t txid) {
+  if (pool_) pool_->set_current_txn(txid);
+}
+
+void BTree::release_txn(uint64_t txid) {
+  if (pool_) pool_->release_txn(txid);
+}
+
+std::vector<BufferPool::DirtyPage> BTree::collect_dirty(uint64_t txid) {
+  if (!pool_) return {};
+  return pool_->collect_dirty(txid);
+}
 
 bool BTree::search(int64_t key, RID& rid) {
   uint32_t page_id = root_;

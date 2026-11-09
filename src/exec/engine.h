@@ -9,6 +9,7 @@
 #include "sql/sql.h"
 #include "storage/page.h"
 #include "storage/schema.h"
+#include "txn/wal.h"
 
 namespace mvdb {
 
@@ -74,6 +75,10 @@ class Engine {
   ResultSet exec_delete(const Statement& stmt);
 
   void rollback_to(size_t mark);
+  void begin_txn_scope();
+  void release_current_txn();
+  void commit_txn();
+  bool recover(const std::vector<TableMeta>& metas, std::string& error);
   void drop_table(uint32_t table_id);
   bool flush_all();
   bool save_catalog();
@@ -85,11 +90,15 @@ class Engine {
 
   std::string data_dir_;
   std::string catalog_path_;
+  std::string wal_path_;
   size_t pool_pages_;
   uint32_t next_table_id_ = 1;
   std::map<uint32_t, std::unique_ptr<TableState>> tables_;
   std::map<std::string, uint32_t> by_name_;
   std::vector<UndoOp> undo_;
+  Wal wal_;
+  uint64_t next_txid_ = 1;
+  uint64_t current_txn_ = 0;
   bool in_txn_ = false;
   std::string float_fmt_ = "%.6f";
 };

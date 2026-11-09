@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <vector>
 #include <string>
 
 #include "storage/buffer_pool.h"
@@ -41,6 +42,10 @@ class BTree {
   bool mark_built();
 
   bool sync();
+
+  void set_current_txn(uint64_t txid);
+  void release_txn(uint64_t txid);
+  std::vector<BufferPool::DirtyPage> collect_dirty(uint64_t txid);
 
  private:
   struct Split {

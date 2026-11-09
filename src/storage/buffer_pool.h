@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <vector>
 #include <unordered_map>
 
 #include "storage/page.h"
@@ -18,6 +19,18 @@ class BufferPool {
 
   std::shared_ptr<Page> fetch(uint32_t page_id);
   void mark_dirty(const std::shared_ptr<Page>& page);
+
+  // Pages dirtied by `txid` and not yet logged. Their owner is stamped by
+  // mark_dirty(), and the pool refuses to evict owned pages, which keeps
+  // uncommitted bytes off disk.
+  struct DirtyPage {
+    uint32_t page_id = 0;
+    std::shared_ptr<Page> page;
+  };
+  std::vector<DirtyPage> collect_dirty(uint64_t txid);
+  void set_current_txn(uint64_t txid) { current_txn_ = txid; }
+  // Clears ownership after a commit or rollback, making pages evictable again.
+  void release_txn(uint64_t txid);
   // Writes every dirty page back to the file.
   void flush_all();
   // flush_all() followed by fdatasync.
@@ -41,6 +54,7 @@ class BufferPool {
   int fd_;
   size_t capacity_;
   uint64_t tick_ = 0;
+  uint64_t current_txn_ = 0;
   std::unordered_map<uint32_t, Frame> frames_;
 };
 

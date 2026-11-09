@@ -13,14 +13,24 @@ void Page::reset() {
   wr16(2, static_cast<uint16_t>(kHeaderSize));  // free_start
   wr16(4, static_cast<uint16_t>(kPageSize));    // free_end
   wr16(6, 0);                        // flags
-  wr32(8, 0);                        // next_page
+  set_lsn(0);
   dirty_ = false;
+  owner_txn_ = 0;
 }
 
 void Page::zero() {
   std::memset(data_, 0, kPageSize);
   dirty_ = false;
+  owner_txn_ = 0;
 }
+
+uint64_t Page::lsn() const {
+  uint64_t value = 0;
+  std::memcpy(&value, data_ + 8, sizeof(value));
+  return value;
+}
+
+void Page::set_lsn(uint64_t value) { std::memcpy(data_ + 8, &value, sizeof(value)); }
 
 uint16_t Page::rd16(size_t off) const {
   uint16_t value = 0;
