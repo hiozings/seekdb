@@ -62,6 +62,7 @@ std::string replace_all(std::string text, const std::string& needle, const std::
 FormatSpec load_format_spec_from_env() {
   FormatSpec spec;
   spec.print_header = env_bool("MVDB_PRINT_HEADER", spec.print_header);
+  spec.header_when_empty = env_bool("MVDB_HEADER_WHEN_EMPTY", spec.header_when_empty);
   spec.column_separator = unescape_separator(env_string("MVDB_SEP", spec.column_separator));
   spec.float_format = env_string("MVDB_FLOAT_FMT", spec.float_format);
   spec.error_format = env_string("MVDB_ERROR_FMT", spec.error_format);
@@ -166,6 +167,7 @@ void OutputWriter::write_ready() {
 
 void OutputWriter::write_result(const ResultSet& rs) {
   if (rs.has_rows) {
+    if (rs.rows.empty() && !spec_.header_when_empty) return;
     if (spec_.print_header) {
       std::string line;
       for (size_t i = 0; i < rs.columns.size(); ++i) {

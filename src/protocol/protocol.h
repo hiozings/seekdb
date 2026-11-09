@@ -16,6 +16,9 @@ struct FormatSpec {
   enum class DmlOutput { None, AffectedRows, Ok };
 
   bool print_header = true;
+  // mysql batch mode prints nothing at all for an empty result set; some
+  // drivers keep the header. Configurable because the task package decides.
+  bool header_when_empty = true;
   std::string column_separator = "\t";
   std::string float_format = "%.6f";
   DmlOutput dml_output = DmlOutput::None;

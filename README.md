@@ -45,6 +45,7 @@ docker run --rm -i -v minivectordb-data:/data --cpus=2 --memory=2g minivectordb:
 | 环境变量 | 取值 | 默认 |
 | --- | --- | --- |
 | `MVDB_PRINT_HEADER` | `1`/`0` | `1` |
+| `MVDB_HEADER_WHEN_EMPTY` | 空结果集是否仍打印表头（mysql 批处理模式不打印） | `1` |
 | `MVDB_SEP` | 分隔符，支持 `\t`/`\n` | `\t` |
 | `MVDB_FLOAT_FMT` | printf 格式 | `%.6f` |
 | `MVDB_DML_OUTPUT` | `none`/`affected`/`ok` | `none` |
