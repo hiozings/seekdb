@@ -1,3 +1,0 @@
-/home/xiangyv/proj/seekdb-round2/build-asan/CMakeFiles/minivectordb.dir
-/home/xiangyv/proj/seekdb-round2/build-asan/CMakeFiles/edit_cache.dir
-/home/xiangyv/proj/seekdb-round2/build-asan/CMakeFiles/rebuild_cache.dir

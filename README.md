@@ -217,6 +217,24 @@ python3 tests/crash/kill_test.py --trials 8     # 强制终止后的恢复不变
 python3 tests/perf/calibrate.py --rows 10000 --dim 128 --queries 120   # 向量召回与延迟
 ```
 
+## 8.1 提交材料
+
+| 文件 | 说明 |
+| --- | --- |
+| `Dockerfile` | 多阶段构建，静态链接 libstdc++/libgcc，前台运行且不监听端口 |
+| `agent/conversation.json` | Agent 学习材料：真实 prompt、交互记录、实验与结果、复盘与局限 |
+| `docs/design.md` | 记录布局、索引、事务、提交持久化与恢复流程 |
+| `notes/evidence.md` | 开发过程中的验证记录（含缺陷定位与修复） |
+
+材料自检：
+
+```bash
+python3 tests/materials/check_conversation.py   # JSON 合法性、128 KiB 上限、证据可定位性
+```
+
+> 仓库根目录另有一个 0 字节的 `conversation.json`，是组织方分支带来的占位文件；
+> 评测读取的正式路径是 `agent/conversation.json`。
+
 ## 9. 测试与设计文档
 
 - `docs/design.md`：存储布局、索引、事务、提交持久化与恢复流程
