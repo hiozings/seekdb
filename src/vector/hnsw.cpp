@@ -5,6 +5,8 @@
 #include <queue>
 #include <utility>
 
+#include "vector/distance.h"
+
 namespace mvdb {
 
 namespace {
@@ -12,12 +14,7 @@ namespace {
 constexpr int kMaxLevel = 16;
 
 float l2_distance(const float* a, const float* b, size_t dim) {
-  double sum = 0.0;
-  for (size_t i = 0; i < dim; ++i) {
-    const double diff = static_cast<double>(a[i]) - static_cast<double>(b[i]);
-    sum += diff * diff;
-  }
-  return static_cast<float>(std::sqrt(sum));
+  return l2_rank(a, b, dim);
 }
 
 }  // namespace
@@ -75,42 +72,47 @@ std::vector<std::pair<float, int>> VectorIndex::search_layer(const float* query,
     visit_epoch_ = 1;
   }
 
+  // Hand-rolled heaps on reserved vectors: the search visits thousands of
+  // nodes per query and priority_queue reallocations showed up in profiles.
   using DistNode = std::pair<float, int>;
-  std::priority_queue<DistNode, std::vector<DistNode>, std::greater<DistNode>> frontier;
-  std::priority_queue<DistNode> best;
+  std::vector<DistNode> frontier;  // min-heap on distance
+  std::vector<DistNode> best;      // max-heap on distance
+  frontier.reserve(ef + 1);
+  best.reserve(ef + 1);
 
   const float entry_dist =
       l2_distance(query, nodes_[entry].vec.data(), static_cast<size_t>(dim_));
-  frontier.emplace(entry_dist, entry);
-  best.emplace(entry_dist, entry);
+  frontier.emplace_back(entry_dist, entry);
+  best.emplace_back(entry_dist, entry);
   visit_stamp_[static_cast<size_t>(entry)] = visit_epoch_;
 
   while (!frontier.empty()) {
-    const auto [dist, node] = frontier.top();
-    if (dist > best.top().first && best.size() >= ef) break;
-    frontier.pop();
+    std::pop_heap(frontier.begin(), frontier.end(), std::greater<DistNode>());
+    const DistNode current = frontier.back();
+    frontier.pop_back();
+    if (current.first > best.front().first && best.size() >= ef) break;
+    const int node = current.second;
     if (level >= static_cast<int>(nodes_[node].links.size())) continue;
-    for (int neighbor : nodes_[node].links[static_cast<size_t>(level)]) {
+    for (int neighbor : nodes_[static_cast<size_t>(node)].links[static_cast<size_t>(level)]) {
       if (visit_stamp_[static_cast<size_t>(neighbor)] == visit_epoch_) continue;
       visit_stamp_[static_cast<size_t>(neighbor)] = visit_epoch_;
       const float ndist =
           l2_distance(query, nodes_[neighbor].vec.data(), static_cast<size_t>(dim_));
-      if (best.size() < ef || ndist < best.top().first) {
-        frontier.emplace(ndist, neighbor);
-        best.emplace(ndist, neighbor);
-        if (best.size() > ef) best.pop();
+      if (best.size() < ef || ndist < best.front().first) {
+        frontier.emplace_back(ndist, neighbor);
+        std::push_heap(frontier.begin(), frontier.end(), std::greater<DistNode>());
+        best.emplace_back(ndist, neighbor);
+        std::push_heap(best.begin(), best.end());
+        if (best.size() > ef) {
+          std::pop_heap(best.begin(), best.end());
+          best.pop_back();
+        }
       }
     }
   }
 
-  std::vector<DistNode> out;
-  out.reserve(best.size());
-  while (!best.empty()) {
-    out.push_back(best.top());
-    best.pop();
-  }
-  std::sort(out.begin(), out.end());
-  return out;
+  std::sort(best.begin(), best.end());
+  return best;
 }
 
 std::vector<int> VectorIndex::select_neighbors(

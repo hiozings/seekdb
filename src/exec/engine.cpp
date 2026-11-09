@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
@@ -17,6 +18,7 @@
 #include "storage/catalog.h"
 #include "storage/heap_file.h"
 #include "storage/record.h"
+#include "vector/distance.h"
 #include "vector/hnsw.h"
 #include "util/util.h"
 
@@ -80,11 +82,7 @@ void Engine::shutdown() {
     release_current_txn();
     in_txn_ = false;
   }
-  if (!flush_all()) return;
-  // Every page is durable now, so the log has no work left for the next start.
-  wal_.log_checkpoint(wal_.allocate_lsn());
-  wal_.sync();
-  wal_.truncate();
+  checkpoint();
 }
 
 std::string Engine::heap_path(uint32_t table_id) const {
@@ -142,10 +140,8 @@ bool Engine::open(std::string& error) {
       }
       state->pk_index->mark_built();
     }
-    if (state->meta.has_vector_index && state->meta.vector_column >= 0) {
-      // Rebuilt from the heap before the engine reports ready.
-      build_vector_index(*state);
-    }
+    // The vector graph is derived state and is built on demand (first
+    // approximate query), so opening a database never pays for it.
     by_name_[lower(meta.name)] = meta.id;
     tables_[meta.id] = std::move(state);
   }
@@ -187,6 +183,7 @@ ResultSet Engine::exec_set_mode(const Statement& stmt) {
 }
 
 void Engine::build_vector_index(TableState& table) {
+  const auto started = std::chrono::steady_clock::now();
   const TableMeta& meta = table.meta;
   if (meta.vector_column < 0 || static_cast<size_t>(meta.vector_column) >= meta.columns.size()) {
     throw_sql_error(kErrInternal, "vector index refers to a missing column");
@@ -206,6 +203,8 @@ void Engine::build_vector_index(TableState& table) {
     table.vec_index->add(pk, vec, std::move(row));
   });
   table.vec_dirty = false;
+  timings_.index_build_ms +=
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
 }
 
 Engine::TableState& Engine::require_table(const std::string& name) {
@@ -289,6 +288,130 @@ Value Engine::coerce(const TableMeta& meta, size_t column_index, const Value& in
     }
   }
   throw_sql_error(kErrInternal, "unreachable coercion path");
+}
+
+struct PreparedCondition {
+  size_t column;
+  Condition::Op op;
+  Value value;
+};
+
+std::vector<PreparedCondition> Engine::prepare_filter(const TableMeta& meta,
+                                                      const std::vector<Condition>& conds) const {
+  std::vector<PreparedCondition> out;
+  out.reserve(conds.size());
+  for (const Condition& cond : conds) {
+    const size_t idx = require_column(meta, cond.column);
+    out.push_back(PreparedCondition{idx, cond.op, coerce(meta, idx, cond.literal)});
+  }
+  return out;
+}
+
+bool Engine::matches_prepared(const std::vector<PreparedCondition>& prepared,
+                              const std::vector<Value>& row) const {
+  for (const PreparedCondition& cond : prepared) {
+    const Value& actual = row[cond.column];
+    const int cmp = compare_values(actual, cond.value);
+    bool ok = false;
+    switch (cond.op) {
+      case Condition::Op::Eq: ok = cmp == 0; break;
+      case Condition::Op::Lt: ok = cmp < 0; break;
+      case Condition::Op::Le: ok = cmp <= 0; break;
+      case Condition::Op::Gt: ok = cmp > 0; break;
+      case Condition::Op::Ge: ok = cmp >= 0; break;
+    }
+    if (!ok) return false;
+  }
+  return true;
+}
+
+bool Engine::locate_raw_row(const TableMeta& meta, std::string_view bytes,
+                            const std::vector<PreparedCondition>& prepared, int vector_column,
+                            RawRow& out) const {
+  size_t pos = 0;
+  out.filter_columns.assign(prepared.size(), nullptr);
+  for (size_t i = 0; i < meta.columns.size(); ++i) {
+    const Column& column = meta.columns[i];
+    switch (column.type) {
+      case ColumnType::BigInt: {
+        if (pos + sizeof(int64_t) > bytes.size()) return false;
+        const char* at = bytes.data() + pos;
+        if (i == meta.pk_index) out.pk = at;
+        for (size_t f = 0; f < prepared.size(); ++f) {
+          if (prepared[f].column == i) out.filter_columns[f] = at;
+        }
+        pos += sizeof(int64_t);
+        break;
+      }
+      case ColumnType::Varchar: {
+        if (pos + sizeof(uint32_t) > bytes.size()) return false;
+        uint32_t len = 0;
+        std::memcpy(&len, bytes.data() + pos, sizeof(len));
+        pos += sizeof(uint32_t);
+        if (pos + len > bytes.size()) return false;
+        const char* at = bytes.data() + pos;
+        for (size_t f = 0; f < prepared.size(); ++f) {
+          if (prepared[f].column == i) out.filter_columns[f] = at;
+        }
+        pos += len;
+        break;
+      }
+      case ColumnType::Vector: {
+        const size_t bytes_needed = static_cast<size_t>(column.dim) * sizeof(float);
+        if (pos + bytes_needed > bytes.size()) return false;
+        if (vector_column == static_cast<int>(i)) {
+          out.vec = reinterpret_cast<const float*>(bytes.data() + pos);
+        }
+        for (size_t f = 0; f < prepared.size(); ++f) {
+          if (prepared[f].column == i) return false;  // vector comparison is rejected earlier
+        }
+        pos += bytes_needed;
+        break;
+      }
+    }
+  }
+  return pos == bytes.size();
+}
+
+bool Engine::raw_row_matches(const std::vector<PreparedCondition>& prepared,
+                             const RawRow& raw) const {
+  for (size_t f = 0; f < prepared.size(); ++f) {
+    const PreparedCondition& cond = prepared[f];
+    const char* at = raw.filter_columns[f];
+    if (at == nullptr) return false;
+    int cmp = 0;
+    if (cond.value.kind == Value::Kind::Int) {
+      int64_t stored = 0;
+      std::memcpy(&stored, at, sizeof(stored));
+      if (stored < cond.value.i) {
+        cmp = -1;
+      } else if (stored > cond.value.i) {
+        cmp = 1;
+      }
+    } else {
+      const uint32_t len = *reinterpret_cast<const uint32_t*>(at - sizeof(uint32_t));
+      const std::string& expected = cond.value.s;
+      const size_t common = std::min<size_t>(len, expected.size());
+      cmp = std::memcmp(at, expected.data(), common);
+      if (cmp == 0) {
+        if (len < expected.size()) {
+          cmp = -1;
+        } else if (len > expected.size()) {
+          cmp = 1;
+        }
+      }
+    }
+    bool ok = false;
+    switch (cond.op) {
+      case Condition::Op::Eq: ok = cmp == 0; break;
+      case Condition::Op::Lt: ok = cmp < 0; break;
+      case Condition::Op::Le: ok = cmp <= 0; break;
+      case Condition::Op::Gt: ok = cmp > 0; break;
+      case Condition::Op::Ge: ok = cmp >= 0; break;
+    }
+    if (!ok) return false;
+  }
+  return true;
 }
 
 bool Engine::matches(const TableMeta& meta, const std::vector<Value>& row,
@@ -561,6 +684,9 @@ ResultSet Engine::exec_select(const Statement& stmt) {
     sort_keys.push_back(spec);
   }
 
+  const std::vector<PreparedCondition> prepared =
+      stmt.has_where ? prepare_filter(meta, stmt.where) : std::vector<PreparedCondition>{};
+
   struct OutRow {
     std::vector<Value> raw;
     std::vector<Value> extras;
@@ -577,17 +703,31 @@ ResultSet Engine::exec_select(const Statement& stmt) {
     }
     dist_slot = static_cast<int>(i);
   }
+  // Eligibility depends on the index *definition*, not on whether the graph is
+  // already materialized: the graph is built lazily on first use.
   const bool ann_eligible =
-      mode_ == QueryMode::Ann && table.vec_index && stmt.has_limit && stmt.limit > 0 &&
+      mode_ == QueryMode::Ann && table.meta.has_vector_index &&
+      table.meta.vector_column >= 0 && stmt.has_limit && stmt.limit > 0 &&
       dist_slot >= 0 && sort_keys.size() == 1 && sort_keys[0].out_index == dist_slot &&
       sort_keys[0].asc;
   bool used_ann = false;
   if (ann_eligible) {
-    if (table.vec_dirty) build_vector_index(table);
+    const auto ann_started = std::chrono::steady_clock::now();
+    struct AnnTimer {
+      Engine::Timings* timings;
+      std::chrono::steady_clock::time_point started;
+      ~AnnTimer() {
+        timings->select_ann_ms +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
+                .count();
+      }
+    } ann_timer{&timings_, ann_started};
+    ++timings_.ann_queries;
+    if (!table.vec_index || table.vec_dirty) build_vector_index(table);
     const size_t k = static_cast<size_t>(stmt.limit);
     const std::vector<float>& query = specs[static_cast<size_t>(dist_slot)].query;
     const VectorIndex::AcceptFn accept = [&](const std::vector<Value>& row) {
-      return !stmt.has_where || matches(meta, row, stmt.where);
+      return prepared.empty() || matches_prepared(prepared, row);
     };
     std::vector<VectorIndex::Hit> hits;
     size_t ef = ef_floor_;
@@ -618,6 +758,7 @@ ResultSet Engine::exec_select(const Statement& stmt) {
       if (ef >= target) break;
       ef = target;
     }
+    timings_.ann_ef_total += ef;
     if (hits.size() >= k) {
       for (const VectorIndex::Hit& hit : hits) {
         RID rid = 0;
@@ -644,10 +785,74 @@ ResultSet Engine::exec_select(const Statement& stmt) {
       used_ann = true;
     }
   }
-  if (!used_ann) table.heap->scan([&](RID rid, std::string_view bytes) {
+  const auto scan_started = std::chrono::steady_clock::now();
+  // Allocation-free Top-K: walk the encoded rows, keep a bounded heap, and only
+  // decode the k rows that survive. The general path below decodes every row,
+  // which at 10k x 128 costs more than the distance arithmetic itself.
+  const bool topk_shape = dist_slot >= 0 && stmt.has_limit && stmt.limit > 0 &&
+                          sort_keys.size() == 1 && sort_keys[0].out_index == dist_slot &&
+                          sort_keys[0].asc;
+  bool used_fast = false;
+  if (!used_ann && topk_shape) {
+    const size_t limit = static_cast<size_t>(stmt.limit);
+    const int vec_column = static_cast<int>(specs[static_cast<size_t>(dist_slot)].table_index);
+    const std::vector<float>& query = specs[static_cast<size_t>(dist_slot)].query;
+    const size_t dim = query.size();
+    std::vector<std::pair<double, int64_t>> top;  // max-heap: worst kept entry on top
+    top.reserve(limit + 1);
+    table.heap->scan([&](RID rid, std::string_view bytes) {
+      ++timings_.rows_scanned;
+      RawRow raw;
+      if (!locate_raw_row(meta, bytes, prepared, vec_column, raw)) return;
+      if (raw.vec == nullptr || raw.pk == nullptr) return;
+      if (!prepared.empty() && !raw_row_matches(prepared, raw)) return;
+      const double distance = l2_exact(raw.vec, query.data(), dim);
+      int64_t pk = 0;
+      std::memcpy(&pk, raw.pk, sizeof(pk));
+      const auto entry = std::make_pair(distance, pk);
+      if (top.size() < limit) {
+        top.push_back(entry);
+        std::push_heap(top.begin(), top.end());
+      } else if (std::make_pair(distance, pk) < top.front()) {
+        std::pop_heap(top.begin(), top.end());
+        top.back() = entry;
+        std::push_heap(top.begin(), top.end());
+      }
+    });
+    std::sort(top.begin(), top.end());
+    for (const auto& [distance, pk] : top) {
+      RID rid = 0;
+      if (!table.pk_index->search(pk, rid)) continue;
+      std::string bytes;
+      if (!table.heap->read(rid, bytes)) continue;
+      std::vector<Value> row;
+      if (!decode_row(meta, bytes, row)) continue;
+      OutRow out;
+      out.pk = pk;
+      for (const OutputSpec& spec : specs) {
+        if (spec.is_distance) {
+          Value v;
+          v.kind = Value::Kind::Float;
+          v.d = distance;
+          out.raw.push_back(std::move(v));
+        } else {
+          out.raw.push_back(row[spec.table_index]);
+        }
+      }
+      for (size_t column : extra_columns) out.extras.push_back(row[column]);
+      out_rows.push_back(std::move(out));
+    }
+    used_fast = true;
+    timings_.select_scan_ms +=
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - scan_started)
+            .count();
+  }
+
+  if (!used_ann && !used_fast) table.heap->scan([&](RID rid, std::string_view bytes) {
+    ++timings_.rows_scanned;
     std::vector<Value> row;
     if (!decode_row(meta, bytes, row)) return;
-    if (stmt.has_where && !matches(meta, row, stmt.where)) return;
+    if (!prepared.empty() && !matches_prepared(prepared, row)) return;
     OutRow out;
     out.pk = row[meta.pk_index].i;
     out.raw.reserve(specs.size());
@@ -664,6 +869,12 @@ ResultSet Engine::exec_select(const Statement& stmt) {
     for (size_t column : extra_columns) out.extras.push_back(row[column]);
     out_rows.push_back(std::move(out));
   });
+  if (!used_ann && !used_fast) {
+    timings_.select_scan_ms +=
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - scan_started)
+            .count();
+  }
+  ++timings_.queries;
 
   if (!sort_keys.empty()) {
     std::stable_sort(out_rows.begin(), out_rows.end(), [&](const OutRow& a, const OutRow& b) {
@@ -702,13 +913,8 @@ ResultSet Engine::exec_select(const Statement& stmt) {
 }
 
 double Engine::l2_distance(const std::vector<float>& a, const std::vector<float>& b) const {
-  double sum = 0.0;
   const size_t n = std::min(a.size(), b.size());
-  for (size_t i = 0; i < n; ++i) {
-    const double diff = static_cast<double>(a[i]) - static_cast<double>(b[i]);
-    sum += diff * diff;
-  }
-  return std::sqrt(sum);
+  return l2_exact(a.data(), b.data(), n);
 }
 
 std::string Engine::format_value(const Value& value, ColumnType type) const {
@@ -787,6 +993,15 @@ void Engine::rollback_to(size_t mark) {
   save_catalog();
 }
 
+bool Engine::checkpoint() {
+  if (!flush_all()) return false;
+  wal_.log_checkpoint(wal_.allocate_lsn());
+  if (!wal_.sync()) return false;
+  if (!wal_.truncate()) return false;
+  wal_bytes_since_checkpoint_ = 0;
+  return true;
+}
+
 bool Engine::flush_all() {
   bool ok = true;
   for (auto& entry : tables_) {
@@ -824,6 +1039,7 @@ void Engine::release_current_txn() {
 
 void Engine::commit_txn() {
   if (current_txn_ == 0) return;
+  const auto started = std::chrono::steady_clock::now();
   std::vector<std::pair<uint32_t, BufferPool::DirtyPage>> pages;
   for (auto& entry : tables_) {
     const uint32_t table_id = entry.first;
@@ -848,7 +1064,15 @@ void Engine::commit_txn() {
   }
   ok = ok && wal_.log_commit(current_txn_) && wal_.sync();
   release_current_txn();
+  const size_t written = pages.size() * (Page::kPageSize + 40) + 40;
+  timings_.wal_bytes += written;
+  wal_bytes_since_checkpoint_ += written;
+  timings_.commit_ms +=
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
   if (!ok) throw_sql_error(kErrInternal, "write-ahead log failure");
+  // Bound log growth: once the log is large, make every page durable and reset
+  // it. Cheap relative to the number of commits that trigger it.
+  if (wal_bytes_since_checkpoint_ >= checkpoint_threshold_) checkpoint();
 }
 
 namespace {

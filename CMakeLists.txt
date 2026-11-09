@@ -26,6 +26,7 @@ add_executable(minivectordb
   src/storage/btree.cpp
   src/txn/wal.cpp
   src/vector/hnsw.cpp
+  src/vector/distance.cpp
 )
 
 target_include_directories(minivectordb PRIVATE src)
@@ -44,6 +45,7 @@ if(MVDB_BUILD_TESTS)
     src/storage/btree.cpp
   src/txn/wal.cpp
   src/vector/hnsw.cpp
+  src/vector/distance.cpp
     src/storage/buffer_pool.cpp
     src/storage/page.cpp
   )
@@ -53,6 +55,8 @@ if(MVDB_BUILD_TESTS)
   add_executable(hnsw_test
     tests/storage/hnsw_test.cpp
     src/vector/hnsw.cpp
+    src/vector/distance.cpp
+  src/vector/distance.cpp
     src/sql/sql.cpp
     src/util/util.cpp
   )

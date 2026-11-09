@@ -54,7 +54,7 @@ int main(int argc, char** argv) {
   }
   std::printf("index size = %zu\n", index.size());
 
-  for (size_t ef : {16, 32, 64, 128, 256}) {
+  for (size_t ef : {16, 32, 64, 128, 256, 512, 1024}) {
     double total = 0.0;
     for (int q = 0; q < kQueries; ++q) {
       std::vector<float> query(kDim);

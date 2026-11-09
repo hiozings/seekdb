@@ -1,6 +1,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -18,17 +19,28 @@ struct Options {
   bool stats = false;
 };
 
-// Reports this process's own peak RSS on stderr. Used by local profiling only;
-// the platform measures memory from cgroup counters.
-void report_peak_rss() {
-  std::ifstream status("/proc/self/status");
-  std::string line;
-  while (std::getline(status, line)) {
-    if (line.rfind("VmHWM:", 0) == 0) {
-      std::fprintf(stderr, "[stats] peak_rss_kb=%s\n", line.c_str() + 6);
-      return;
+// Reports this process's own peak RSS and block I/O on stderr. Used by local
+// profiling only; the platform measures both from cgroup counters.
+void report_process_stats() {
+  {
+    std::ifstream status("/proc/self/status");
+    std::string line;
+    while (std::getline(status, line)) {
+      if (line.rfind("VmHWM:", 0) == 0) {
+        std::fprintf(stderr, "[stats] peak_rss_kb=%s\n", line.c_str() + 6);
+        break;
+      }
     }
   }
+  std::ifstream io("/proc/self/io");
+  std::string line;
+  unsigned long long read_bytes = 0;
+  unsigned long long write_bytes = 0;
+  while (std::getline(io, line)) {
+    if (line.rfind("read_bytes:", 0) == 0) read_bytes = std::strtoull(line.c_str() + 11, nullptr, 10);
+    if (line.rfind("write_bytes:", 0) == 0) write_bytes = std::strtoull(line.c_str() + 12, nullptr, 10);
+  }
+  std::fprintf(stderr, "[stats] read_bytes=%llu write_bytes=%llu\n", read_bytes, write_bytes);
 }
 
 void print_help() {
@@ -141,7 +153,11 @@ int main(int argc, char** argv) {
   std::signal(SIGPIPE, SIG_IGN);
 
   mvdb::FormatSpec spec = mvdb::load_format_spec_from_env();
-  mvdb::Engine engine(opts.data_dir);
+  size_t pool_pages = 2048;
+  if (const char* value = std::getenv("MVDB_POOL_PAGES")) {
+    pool_pages = std::strtoul(value, nullptr, 10);
+  }
+  mvdb::Engine engine(opts.data_dir, pool_pages);
   {
     std::string error;
     if (!engine.open(error)) {
@@ -181,6 +197,17 @@ int main(int argc, char** argv) {
   }
   writer.flush();
   engine.shutdown();
-  if (opts.stats) report_peak_rss();
+  if (opts.stats) {
+    report_process_stats();
+    const mvdb::Engine::Timings& t = engine.timings();
+    std::fprintf(stderr,
+                 "[stats] queries=%llu ann_queries=%llu rows_scanned=%llu avg_ef=%.1f\n"
+                 "[stats] select_scan_ms=%.1f select_ann_ms=%.1f commit_ms=%.1f index_build_ms=%.1f\n",
+                 static_cast<unsigned long long>(t.queries),
+                 static_cast<unsigned long long>(t.ann_queries),
+                 static_cast<unsigned long long>(t.rows_scanned),
+                 t.ann_queries ? static_cast<double>(t.ann_ef_total) / static_cast<double>(t.ann_queries) : 0.0,
+                 t.select_scan_ms, t.select_ann_ms, t.commit_ms, t.index_build_ms);
+  }
   return 0;
 }
