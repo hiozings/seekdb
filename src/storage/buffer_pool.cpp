@@ -47,16 +47,22 @@ bool BufferPool::write_page(int fd, uint32_t page_id, const Page& page) {
   return true;
 }
 
-void BufferPool::evict_one() {
-  if (frames_.empty()) return;
-  auto victim = frames_.begin();
-  for (auto it = frames_.begin(); it != frames_.end(); ++it) {
-    if (it->second.tick < victim->second.tick) victim = it;
+bool BufferPool::evict_one() {
+  // A page whose use_count is above one is still held by a caller; evicting it
+  // would let a later fetch build a second, stale copy of the same page.
+  Frame* victim = nullptr;
+  uint32_t victim_id = 0;
+  for (auto& entry : frames_) {
+    if (entry.second.page.use_count() > 1) continue;
+    if (victim == nullptr || entry.second.tick < victim->tick) {
+      victim = &entry.second;
+      victim_id = entry.first;
+    }
   }
-  if (victim->second.page->dirty()) {
-    write_page(fd_, victim->first, *victim->second.page);
-  }
-  frames_.erase(victim);
+  if (victim == nullptr) return false;
+  if (victim->page->dirty()) write_page(fd_, victim_id, *victim->page);
+  frames_.erase(victim_id);
+  return true;
 }
 
 std::shared_ptr<Page> BufferPool::fetch(uint32_t page_id) {

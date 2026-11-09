@@ -54,12 +54,17 @@ RID HeapFile::insert(const std::string& record) {
       return rid;
     }
   }
-  for (uint32_t p = 0; p < hint_page_; ++p) {
+  // Reuse space freed by deletes, probing a bounded number of candidates.
+  size_t probed = 0;
+  for (auto it = spare_pages_.begin(); it != spare_pages_.end() && probed < 8;) {
+    const uint32_t p = *it;
+    ++probed;
     const RID rid = insert_into(p, record);
     if (rid != kInvalidRid) {
       hint_page_ = p;
       return rid;
     }
+    it = spare_pages_.erase(it);
   }
   const uint32_t new_page = page_count_++;
   auto page = pool_->fetch(new_page);
@@ -89,6 +94,7 @@ bool HeapFile::erase(RID rid) {
   auto page = pool_->fetch(page_id);
   if (!page->erase(rid_slot(rid))) return false;
   pool_->mark_dirty(page);
+  spare_pages_.insert(page_id);
   return true;
 }
 

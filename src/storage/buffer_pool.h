@@ -35,7 +35,8 @@ class BufferPool {
     uint64_t tick = 0;
   };
 
-  void evict_one();
+  // Returns false when every cached page is pinned by a caller.
+  bool evict_one();
 
   int fd_;
   size_t capacity_;

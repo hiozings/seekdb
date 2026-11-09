@@ -17,6 +17,11 @@ void Page::reset() {
   dirty_ = false;
 }
 
+void Page::zero() {
+  std::memset(data_, 0, kPageSize);
+  dirty_ = false;
+}
+
 uint16_t Page::rd16(size_t off) const {
   uint16_t value = 0;
   std::memcpy(&value, data_ + off, sizeof(value));

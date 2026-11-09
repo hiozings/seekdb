@@ -39,6 +39,9 @@ class Page {
   Page();
 
   void reset();
+  // Zeroes the page without installing the slotted-page header. Used by
+  // structures with their own on-page layout (the B+tree).
+  void zero();
 
   // Inserts a record, reusing a dead slot when possible.
   bool insert(const std::string& record, uint16_t& slot_out);

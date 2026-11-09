@@ -23,6 +23,7 @@ add_executable(minivectordb
   src/storage/heap_file.cpp
   src/storage/record.cpp
   src/storage/catalog.cpp
+  src/storage/btree.cpp
 )
 
 target_include_directories(minivectordb PRIVATE src)
@@ -34,3 +35,14 @@ endif()
 
 find_package(Threads REQUIRED)
 target_link_libraries(minivectordb PRIVATE Threads::Threads)
+
+if(MVDB_BUILD_TESTS)
+  add_executable(btree_test
+    tests/storage/btree_test.cpp
+    src/storage/btree.cpp
+    src/storage/buffer_pool.cpp
+    src/storage/page.cpp
+  )
+  target_include_directories(btree_test PRIVATE src)
+  target_link_libraries(btree_test PRIVATE Threads::Threads)
+endif()

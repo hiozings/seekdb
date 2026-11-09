@@ -12,6 +12,7 @@
 
 namespace mvdb {
 
+class BTree;
 class HeapFile;
 
 struct ResultSet {
@@ -48,7 +49,7 @@ class Engine {
   struct TableState {
     TableMeta meta;
     std::unique_ptr<HeapFile> heap;
-    std::unordered_map<int64_t, RID> pk_map;
+    std::unique_ptr<BTree> pk_index;
   };
 
   struct UndoOp {
@@ -77,6 +78,7 @@ class Engine {
   bool flush_all();
   bool save_catalog();
   std::string heap_path(uint32_t table_id) const;
+  std::string btree_path(uint32_t table_id) const;
 
   std::string format_value(const Value& value, ColumnType type) const;
   double l2_distance(const std::vector<float>& a, const std::vector<float>& b) const;

@@ -10,6 +10,7 @@
 #include <set>
 #include <utility>
 
+#include "storage/btree.h"
 #include "storage/catalog.h"
 #include "storage/heap_file.h"
 #include "storage/record.h"
@@ -61,6 +62,7 @@ Engine::~Engine() {
   }
   for (auto& entry : tables_) {
     if (entry.second->heap) entry.second->heap->close();
+    if (entry.second->pk_index) entry.second->pk_index->close();
   }
 }
 
@@ -74,6 +76,10 @@ void Engine::shutdown() {
 
 std::string Engine::heap_path(uint32_t table_id) const {
   return data_dir_ + "/t" + std::to_string(table_id) + ".heap";
+}
+
+std::string Engine::btree_path(uint32_t table_id) const {
+  return data_dir_ + "/t" + std::to_string(table_id) + ".btree";
 }
 
 bool Engine::open(std::string& error) {
@@ -96,20 +102,28 @@ bool Engine::open(std::string& error) {
       error = "cannot open heap file for table '" + meta.name + "'";
       return false;
     }
-    // Temporary primary-key index: rebuilt by a full scan at startup. It is
-    // replaced by an on-disk B+tree in milestone M1b.
-    bool corrupt = false;
-    state->heap->scan([&](RID rid, std::string_view bytes) {
-      int64_t pk = 0;
-      if (!decode_primary_key(state->meta, bytes, pk)) {
-        corrupt = true;
-        return;
-      }
-      if (!state->pk_map.emplace(pk, rid).second) corrupt = true;
-    });
-    if (corrupt) {
-      error = "corrupt heap file for table '" + meta.name + "'";
+    state->pk_index = std::make_unique<BTree>(btree_path(meta.id), pool_pages_);
+    if (!state->pk_index->open()) {
+      error = "cannot open primary-key index for table '" + meta.name + "'";
       return false;
+    }
+    if (!state->pk_index->built()) {
+      // A crash during a previous build leaves the flag unset, so rebuilding is
+      // idempotent: insert() upserts, and the flag is only set after success.
+      bool corrupt = false;
+      state->heap->scan([&](RID rid, std::string_view bytes) {
+        int64_t pk = 0;
+        if (!decode_primary_key(state->meta, bytes, pk)) {
+          corrupt = true;
+          return;
+        }
+        state->pk_index->insert(pk, rid);
+      });
+      if (corrupt) {
+        error = "corrupt heap file for table '" + meta.name + "'";
+        return false;
+      }
+      state->pk_index->mark_built();
     }
     by_name_[lower(meta.name)] = meta.id;
     tables_[meta.id] = std::move(state);
@@ -251,6 +265,10 @@ ResultSet Engine::exec_create(const Statement& stmt) {
   if (!state->heap->open()) {
     throw_sql_error(kErrInternal, "cannot create storage for table '" + stmt.table + "'");
   }
+  state->pk_index = std::make_unique<BTree>(btree_path(meta.id), pool_pages_);
+  if (!state->pk_index->open() || !state->pk_index->mark_built()) {
+    throw_sql_error(kErrInternal, "cannot create index for table '" + stmt.table + "'");
+  }
   const uint32_t table_id = meta.id;
   tables_[table_id] = std::move(state);
   by_name_[key] = table_id;
@@ -292,7 +310,8 @@ ResultSet Engine::exec_insert(const Statement& stmt) {
       values[targets[i]] = coerce(table.meta, targets[i], input_row[i]);
     }
     const int64_t pk = values[table.meta.pk_index].i;
-    if (table.pk_map.count(pk) != 0) {
+    RID existing = 0;
+    if (table.pk_index->search(pk, existing)) {
       throw_sql_error(kErrDuplicateKey, "Duplicate entry '" + std::to_string(pk) +
                                             "' for key 'PRIMARY'");
     }
@@ -301,7 +320,7 @@ ResultSet Engine::exec_insert(const Statement& stmt) {
     if (rid == kInvalidRid) {
       throw_sql_error(kErrInternal, "cannot allocate space for row");
     }
-    table.pk_map.emplace(pk, rid);
+    table.pk_index->insert(pk, rid);
     undo_.push_back(UndoOp{UndoOp::Kind::InsertedRow, table.meta.id, pk, rid, {}});
   }
   ResultSet rs;
@@ -326,7 +345,7 @@ ResultSet Engine::exec_delete(const Statement& stmt) {
 
   for (const Victim& victim : victims) {
     table.heap->erase(victim.rid);
-    table.pk_map.erase(victim.pk);
+    table.pk_index->erase(victim.pk);
     undo_.push_back(UndoOp{UndoOp::Kind::DeletedRow, table.meta.id, victim.pk, 0, victim.record});
   }
   ResultSet rs;
@@ -377,7 +396,7 @@ ResultSet Engine::exec_update(const Statement& stmt) {
     if (new_rid == kInvalidRid) {
       throw_sql_error(kErrInternal, "cannot allocate space for updated row");
     }
-    table.pk_map[target.pk] = new_rid;
+    table.pk_index->insert(target.pk, new_rid);
     undo_.push_back(
         UndoOp{UndoOp::Kind::UpdatedRow, table.meta.id, target.pk, new_rid, target.old_record});
   }
@@ -562,6 +581,10 @@ void Engine::drop_table(uint32_t table_id) {
     it->second->heap->close();
     ::unlink(heap_path(table_id).c_str());
   }
+  if (it->second->pk_index) {
+    it->second->pk_index->close();
+    ::unlink(btree_path(table_id).c_str());
+  }
   tables_.erase(it);
 }
 
@@ -574,13 +597,13 @@ void Engine::rollback_to(size_t mark) {
     switch (op.kind) {
       case UndoOp::Kind::InsertedRow:
         table.heap->erase(op.rid);
-        table.pk_map.erase(op.pk);
+        table.pk_index->erase(op.pk);
         break;
       case UndoOp::Kind::DeletedRow:
       case UndoOp::Kind::UpdatedRow: {
         if (op.kind == UndoOp::Kind::UpdatedRow) table.heap->erase(op.rid);
         const RID restored = table.heap->insert(op.record);
-        if (restored != kInvalidRid) table.pk_map[op.pk] = restored;
+        if (restored != kInvalidRid) table.pk_index->insert(op.pk, restored);
         break;
       }
       case UndoOp::Kind::CreatedTable:
@@ -596,6 +619,7 @@ bool Engine::flush_all() {
   bool ok = true;
   for (auto& entry : tables_) {
     if (entry.second->heap && !entry.second->heap->sync()) ok = false;
+    if (entry.second->pk_index && !entry.second->pk_index->sync()) ok = false;
   }
   return ok;
 }

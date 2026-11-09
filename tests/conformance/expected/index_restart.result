@@ -1,0 +1,9 @@
+ERROR 1062: Duplicate entry '2' for key 'PRIMARY'
+id	v
+1	a
+2	b
+id	v
+1	again
+2	b
+id
+1

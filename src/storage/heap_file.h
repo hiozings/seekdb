@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <set>
 #include <string>
 #include <string_view>
 
@@ -51,6 +52,9 @@ class HeapFile {
   int fd_ = -1;
   uint32_t page_count_ = 0;
   uint32_t hint_page_ = 0;
+  // Pages that may still have room because rows were deleted from them. Bounded
+  // probing here replaces an earlier full-file backscan that made inserts O(n^2).
+  std::set<uint32_t> spare_pages_;
   std::unique_ptr<BufferPool> pool_;
 };
 

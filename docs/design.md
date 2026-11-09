@@ -1,6 +1,6 @@
 # MiniVectorDB 简要设计
 
-> 状态：M1（协议层 + SQL 解析 + 持久化页存储 + 事务与重启一致）。标「计划」的章节在 M1b–M5 落地。
+> 状态：M1b（协议层 + SQL 解析 + 持久化页存储 + 磁盘 B+tree 主键索引 + 事务与重启一致）。标「计划」的章节在 M3–M5 落地。
 
 ## 1. 目标与范围
 
@@ -14,7 +14,7 @@ main           进程入口：参数、信号、stdin 循环
   protocol     语句切分、线格式（FormatSpec）、结果/错误渲染、flush
   sql          词法 → 递归下降解析 → AST；错误码
   exec         规划与执行：过滤、投影、排序、TopK、L2 距离、类型强转
-  storage      页管理、buffer pool、堆文件、catalog（B+tree 计划 M1b）
+  storage      页管理、buffer pool、堆文件、catalog、B+tree 主键索引
   txn          undo（内存链，已实现）、WAL、checkpoint、恢复     （WAL 计划 M3）
   vector       距离核、HNSW、索引工件与版本                      （计划 M4）
 ```
@@ -32,8 +32,10 @@ main           进程入口：参数、信号、stdin 循环
 - buffer pool 有界（默认 256 页 = 2 MiB），使用 `pread/pwrite` 而非 `mmap`：
   内存指标包含页缓存，`mmap` 会把文件全量计入峰值。页以 `shared_ptr` 管理，
   换出不会让调用方持有悬垂指针。
-- 主键索引：**当前**在打开时全表扫描重建内存哈希；**计划 M1b** 换成磁盘 B+tree，
-  以避免索引内存随行数线性增长。
+- 主键索引：磁盘 B+tree（`pk → RID`），页 0 为元数据页，叶子存 `(key, rid)`
+  并维护 `next` 链（为将来的范围扫描预留）。插入走分裂上推，删除只摘除键、
+  不合并节点（路由只需"最右且分隔键 ≤ key"的子页，因此仍然正确）。
+  打开时直接加载元数据页，**不扫描堆文件**。
 
 ## 4. 向量索引方案（计划）
 
@@ -71,8 +73,9 @@ NO-FORCE 策略避免每批重写数据文件；checkpoint 先刷页并 fsync，
 
 ## 8. 已实现功能（M0–M1）
 
-- 持久化：catalog 原子写入、每表堆文件、提交时刷脏页并 `fdatasync`、
+- 持久化：catalog 原子写入、每表堆文件与 B+tree 索引、提交时刷脏页并 `fdatasync`、
   正常关闭回滚未提交事务。
+- 主键索引：磁盘 B+tree，启动零扫描；插入时 upsert、删除摘键；构建标志保证恢复幂等。
 - 完整 SQL 子集解析：`CREATE TABLE`、`INSERT`（多行）、`SELECT`（投影 / `*` / `L2_DISTANCE` /
   `WHERE` / `ORDER BY` / `LIMIT`）、`UPDATE`、`DELETE`、`BEGIN`/`COMMIT`/`ROLLBACK`。
 - 类型校验：`BIGINT`、`VARCHAR(n)`（Unicode 码点计数）、`VECTOR(n)`（float32、拒绝 NaN/Inf/维度不符/溢出）。
@@ -83,7 +86,7 @@ NO-FORCE 策略避免每批重写数据文件；checkpoint 先刷页并 fsync，
 ## 9. 已知限制
 
 - 尚无 WAL：强制终止时正在刷写的页可能撕裂，恢复依赖页结构而非日志重放（M3）。
-- 主键索引在打开时全表扫描重建，内存占用随行数线性增长（M1b 换 B+tree）。
+- B+tree 不做节点合并与回收，删除多时索引文件不收缩。
 - 无向量索引，`ann` 模式尚未存在（M4）。
 - 事务回滚依赖内存 undo 链：回滚需要的旧行镜像在事务期间驻留内存；
   这是 undo 的正常代价，但大事务下的内存上限尚未实测（M3 会给出有界策略）。
