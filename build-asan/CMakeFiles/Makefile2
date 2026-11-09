@@ -85,12 +85,12 @@ clean: CMakeFiles/minivectordb.dir/clean
 CMakeFiles/minivectordb.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/minivectordb.dir/build.make CMakeFiles/minivectordb.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/minivectordb.dir/build.make CMakeFiles/minivectordb.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/xiangyv/proj/seekdb-round2/build-asan/CMakeFiles --progress-num=1,2,3,4,5,6,7,8,9,10,11,12,13 "Built target minivectordb"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/xiangyv/proj/seekdb-round2/build-asan/CMakeFiles --progress-num=1,2,3,4,5,6,7,8,9,10,11,12,13,14 "Built target minivectordb"
 .PHONY : CMakeFiles/minivectordb.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/minivectordb.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/xiangyv/proj/seekdb-round2/build-asan/CMakeFiles 13
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/xiangyv/proj/seekdb-round2/build-asan/CMakeFiles 14
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/minivectordb.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/xiangyv/proj/seekdb-round2/build-asan/CMakeFiles 0
 .PHONY : CMakeFiles/minivectordb.dir/rule
@@ -102,7 +102,7 @@ minivectordb: CMakeFiles/minivectordb.dir/rule
 # codegen rule for target.
 CMakeFiles/minivectordb.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/minivectordb.dir/build.make CMakeFiles/minivectordb.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/xiangyv/proj/seekdb-round2/build-asan/CMakeFiles --progress-num=1,2,3,4,5,6,7,8,9,10,11,12,13 "Finished codegen for target minivectordb"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/xiangyv/proj/seekdb-round2/build-asan/CMakeFiles --progress-num=1,2,3,4,5,6,7,8,9,10,11,12,13,14 "Finished codegen for target minivectordb"
 .PHONY : CMakeFiles/minivectordb.dir/codegen
 
 # clean rule for target.

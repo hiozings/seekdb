@@ -1,0 +1,24 @@
+-- The vector index definition and its contents must survive a restart.
+CREATE TABLE t (id BIGINT PRIMARY KEY, cat VARCHAR(8), v VECTOR(4));
+INSERT INTO t VALUES
+    (1, 'a', '[1, 0, 0, 0]'),
+    (2, 'a', '[0.5, 0.5, 0, 0]'),
+    (3, 'b', '[0, 1, 0, 0]');
+CREATE VECTOR INDEX t_v ON t (v);
+
+-- restart
+SET mode = 'ann';
+SELECT id, L2_DISTANCE(v, '[1, 0, 0, 0]') AS d FROM t ORDER BY d LIMIT 2;
+
+INSERT INTO t VALUES (4, 'b', '[0.9, 0.1, 0, 0]');
+
+-- restart
+SET mode = 'ann';
+SELECT id, L2_DISTANCE(v, '[1, 0, 0, 0]') AS d FROM t ORDER BY d LIMIT 2;
+
+-- A rollback must not leave stale entries in the graph.
+BEGIN;
+INSERT INTO t VALUES (5, 'a', '[0.99, 0.01, 0, 0]');
+ROLLBACK;
+SET mode = 'ann';
+SELECT id, L2_DISTANCE(v, '[1, 0, 0, 0]') AS d FROM t ORDER BY d LIMIT 2;

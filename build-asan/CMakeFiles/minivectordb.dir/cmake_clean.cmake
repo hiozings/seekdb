@@ -24,6 +24,8 @@ file(REMOVE_RECURSE
   "CMakeFiles/minivectordb.dir/src/txn/wal.cpp.o.d"
   "CMakeFiles/minivectordb.dir/src/util/util.cpp.o"
   "CMakeFiles/minivectordb.dir/src/util/util.cpp.o.d"
+  "CMakeFiles/minivectordb.dir/src/vector/hnsw.cpp.o"
+  "CMakeFiles/minivectordb.dir/src/vector/hnsw.cpp.o.d"
   "minivectordb"
   "minivectordb.pdb"
 )

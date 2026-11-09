@@ -15,6 +15,7 @@ namespace mvdb {
 
 class BTree;
 class HeapFile;
+class VectorIndex;
 
 struct ResultSet {
   bool has_rows = false;
@@ -38,6 +39,11 @@ class Engine {
 
   void set_float_format(std::string fmt) { float_fmt_ = std::move(fmt); }
 
+  enum class QueryMode { Exact, Ann };
+  void set_mode(QueryMode mode) { mode_ = mode; }
+  QueryMode mode() const { return mode_; }
+  void set_ef_floor(size_t ef) { ef_floor_ = ef; }
+
   // Executes one statement. Throws SqlError on failure; a failed statement
   // leaves no partial modification behind.
   ResultSet execute(const Statement& stmt);
@@ -51,10 +57,13 @@ class Engine {
     TableMeta meta;
     std::unique_ptr<HeapFile> heap;
     std::unique_ptr<BTree> pk_index;
+    std::unique_ptr<VectorIndex> vec_index;
+    // Set when a rollback may have left the graph stale; rebuilt before use.
+    bool vec_dirty = false;
   };
 
   struct UndoOp {
-    enum class Kind { InsertedRow, DeletedRow, UpdatedRow, CreatedTable } kind;
+    enum class Kind { InsertedRow, DeletedRow, UpdatedRow, CreatedTable, CreatedVectorIndex } kind;
     uint32_t table_id = 0;
     int64_t pk = 0;
     RID rid = 0;
@@ -73,6 +82,9 @@ class Engine {
   ResultSet exec_select(const Statement& stmt);
   ResultSet exec_update(const Statement& stmt);
   ResultSet exec_delete(const Statement& stmt);
+  ResultSet exec_create_vector_index(const Statement& stmt);
+  ResultSet exec_set_mode(const Statement& stmt);
+  void build_vector_index(TableState& table);
 
   void rollback_to(size_t mark);
   void begin_txn_scope();
@@ -101,6 +113,9 @@ class Engine {
   uint64_t current_txn_ = 0;
   bool in_txn_ = false;
   std::string float_fmt_ = "%.6f";
+  QueryMode mode_ = QueryMode::Exact;
+  size_t ef_floor_ = 256;
+  size_t ef_max_ = 1024;
 };
 
 }  // namespace mvdb

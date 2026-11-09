@@ -16,6 +16,7 @@ minivectordb: \
   CMakeFiles/minivectordb.dir/src/storage/catalog.cpp.o \
   CMakeFiles/minivectordb.dir/src/storage/btree.cpp.o \
   CMakeFiles/minivectordb.dir/src/txn/wal.cpp.o \
+  CMakeFiles/minivectordb.dir/src/vector/hnsw.cpp.o \
   /usr/lib/gcc/x86_64-pc-linux-gnu/16/libstdc++.so \
   /usr/lib/gcc/x86_64-pc-linux-gnu/16/../../../../lib/libm.so \
   /usr/lib/gcc/x86_64-pc-linux-gnu/16/../../../../lib/libm.so \
@@ -81,6 +82,8 @@ CMakeFiles/minivectordb.dir/src/storage/catalog.cpp.o:
 CMakeFiles/minivectordb.dir/src/storage/btree.cpp.o:
 
 CMakeFiles/minivectordb.dir/src/txn/wal.cpp.o:
+
+CMakeFiles/minivectordb.dir/src/vector/hnsw.cpp.o:
 
 /usr/lib/gcc/x86_64-pc-linux-gnu/16/libstdc++.so:
 

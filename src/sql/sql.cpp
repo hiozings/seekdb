@@ -223,7 +223,13 @@ class Parser {
     if (peek().kind != TokenKind::Ident) syntax_error("expected a statement keyword");
     const std::string kw = to_lower(peek().text);
     if (kw == "create") {
-      parse_create_table(stmt);
+      if (is_kw(peek(1), "vector")) {
+        parse_create_vector_index(stmt);
+      } else {
+        parse_create_table(stmt);
+      }
+    } else if (kw == "set") {
+      parse_set_mode(stmt);
     } else if (kw == "insert") {
       parse_insert(stmt);
     } else if (kw == "select") {
@@ -384,6 +390,37 @@ class Parser {
       return parse_numeric_literal();
     }
     syntax_error("expected a literal");
+  }
+
+  void parse_create_vector_index(Statement& stmt) {
+    stmt.kind = Statement::Kind::CreateVectorIndex;
+    expect_kw("create");
+    expect_kw("vector");
+    expect_kw("index");
+    stmt.index_name = expect_ident("an index name");
+    expect_kw("on");
+    stmt.table = expect_ident("a table name");
+    expect(TokenKind::LParen, "'('");
+    stmt.index_column = expect_ident("a column name");
+    expect(TokenKind::RParen, "')'");
+  }
+
+  void parse_set_mode(Statement& stmt) {
+    stmt.kind = Statement::Kind::SetMode;
+    expect_kw("set");
+    if (!accept_kw("mode")) {
+      throw_sql_error(kErrNotSupported, "only SET mode = 'exact'|'ann' is supported");
+    }
+    accept(TokenKind::Eq);
+    if (peek().kind == TokenKind::StrLit) {
+      stmt.mode_value = peek().text;
+      advance();
+    } else if (peek().kind == TokenKind::Ident) {
+      stmt.mode_value = peek().text;
+      advance();
+    } else {
+      syntax_error("expected 'exact' or 'ann'");
+    }
   }
 
   void parse_create_table(Statement& stmt) {

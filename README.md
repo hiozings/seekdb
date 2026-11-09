@@ -2,7 +2,7 @@
 
 轻量单机向量数据库：基础 SQL、向量检索、持久化存储、事务与崩溃恢复。
 
-> 当前状态：里程碑 **M3**（协议层 + SQL 解析 + 持久化页存储 + B+tree 主键索引 + WAL 事务与崩溃恢复）。
+> 当前状态：里程碑 **M4**（协议层 + SQL 解析 + 持久化页存储 + B+tree 主键索引 + WAL 崩溃恢复 + HNSW 向量索引）。
 > 向量索引（M4）与 WAL 崩溃恢复（M3）尚未接入；README 会随里程碑更新。
 
 ## 1. 语言与构建
@@ -87,6 +87,8 @@ docker run --rm -i -v minivectordb-data:/data --cpus=2 --memory=2g minivectordb:
 | 修改 | `UPDATE t SET 列 = 值, ... [WHERE ...]` |
 | 删除 | `DELETE FROM t [WHERE ...]` |
 | 事务 | `BEGIN` / `START TRANSACTION`、`COMMIT`、`ROLLBACK` |
+| 向量索引 | `CREATE VECTOR INDEX 名称 ON 表 (向量列)` |
+| 检索模式 | `SET mode = 'exact'` / `SET mode = 'ann'`，也支持 `/* mode=ann */` 语句注释 |
 
 明确的语义约束：
 
@@ -96,6 +98,28 @@ docker run --rm -i -v minivectordb-data:/data --cpus=2 --memory=2g minivectordb:
 - 距离按存储后的 `float32` 向量计算；`L2_DISTANCE` 升序，距离并列时按主键升序。
 - 语句失败不留下任何部分修改；事务内的查询与向量检索都能看到本事务已完成的修改。
 - 不支持：`NULL`、`JOIN`、聚合、子查询、`ALTER TABLE`、外键、嵌套事务、`OR`、`DROP` 等，均返回明确错误而不是静默执行。
+
+## 5.1 向量检索语义
+
+- **exact**（默认）：永远暴力扫描，即使表上存在向量索引。
+- **ann**：仅在查询形如 `SELECT ... L2_DISTANCE(col, q) AS d ... ORDER BY d LIMIT k` 且表上有向量索引时启用。
+  - 搜索从 `ef=256` 开始；若返回不足 k 条则翻倍重试，直到 `ef=2048`。
+  - **过滤感知**：带 `WHERE` 时按本次搜索实测的通过率放大 `ef`（约 1/选择性），
+    否则被接受的候选过浅、召回会悄悄下滑。
+  - 结果按存储向量重新计算精确距离并排序，距离并列按主键升序。
+  - 任何一步不满足（索引缺失、结果不足、预算耗尽）都退回精确扫描，而不是返回残缺结果。
+- 索引在**打开数据库时从堆文件重建**，重建完成前不报告就绪。
+- 写入、更新、删除都会同步维护图；回滚会把索引标记为陈旧，下次 ann 查询前重建。
+
+实测（10000 行 × 128 维均匀随机数据，k=10，120 条查询）：
+
+| 分组 | exact 召回 | ann 召回 |
+| --- | ---: | ---: |
+| 无过滤 | 1.0000 | 0.9992 |
+| 等值过滤（10% 选择性） | 1.0000 | 0.9892 |
+
+复现：`python3 tests/perf/calibrate.py --rows 10000 --dim 128 --queries 120`
+（该脚本需要 NumPy，仅用于本地评测，不参与镜像构建）
 
 ## 6. 错误码
 
@@ -173,6 +197,7 @@ python3 tests/conformance/driver.py -v         # 失败时显示差异
 python3 tests/conformance/driver.py --update   # 重新生成期望输出
 python3 tests/storage/large_dataset.py --rows 20000 --dim 128   # 超出页缓存的数据集
 python3 tests/crash/kill_test.py --trials 8     # 强制终止后的恢复不变量
+python3 tests/perf/calibrate.py --rows 10000 --dim 128 --queries 120   # 向量召回与延迟
 ```
 
 ## 9. 测试与设计文档
@@ -184,6 +209,8 @@ python3 tests/crash/kill_test.py --trials 8     # 强制终止后的恢复不变
 
 ## 10. 已知限制
 
+- 向量索引每次打开重建（10k 行约数秒），尚未持久化为独立工件（M5 规划）。
+- 均匀随机 128 维是 HNSW 的困难负载：M=16 在 ef=256 时召回只有约 0.87，因此固定使用 M=32。
 - WAL 只在正常关闭或恢复完成后截断，长时间大批量写入期间日志会持续增长（M5 规划周期性 checkpoint）。
 - 每次提交都写整页镜像；大事务的日志量约为脏页数的 8 KiB 倍，行级逻辑日志可进一步压缩（M5）。
 - B+tree 删除只摘除键，不做节点合并；长期大量删除后索引文件不会收缩。

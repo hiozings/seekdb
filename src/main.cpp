@@ -55,11 +55,37 @@ bool is_exit_command(const std::string& text) {
 }
 
 // Returns false when the session should end.
+// Detects a leading `/* mode=ann */` style hint. The official task package
+// decides how exact/ann is selected; this keeps a second channel available in
+// case the driver uses a comment instead of a statement.
+bool apply_mode_comment(const std::string& text, mvdb::Engine& engine) {
+  const size_t open = text.find("/*");
+  if (open == std::string::npos) return false;
+  const size_t close = text.find("*/", open + 2);
+  if (close == std::string::npos) return false;
+  const std::string body = mvdb::to_lower(text.substr(open + 2, close - open - 2));
+  const size_t pos = body.find("mode");
+  if (pos == std::string::npos) return false;
+  const size_t eq = body.find('=', pos);
+  if (eq == std::string::npos) return false;
+  const std::string value = mvdb::trim(body.substr(eq + 1));
+  if (value == "ann") {
+    engine.set_mode(mvdb::Engine::QueryMode::Ann);
+    return true;
+  }
+  if (value == "exact") {
+    engine.set_mode(mvdb::Engine::QueryMode::Exact);
+    return true;
+  }
+  return false;
+}
+
 bool handle_statement(const std::string& raw, mvdb::Engine& engine, mvdb::OutputWriter& writer,
                       const Options& opts) {
   const std::string text = mvdb::trim(raw);
   if (text.empty()) return true;
   if (is_exit_command(text)) return false;
+  apply_mode_comment(text, engine);
 
   if (opts.probe) {
     std::fprintf(stderr, "[probe] statement: %s\n", text.c_str());

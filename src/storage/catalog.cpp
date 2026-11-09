@@ -12,7 +12,7 @@ namespace mvdb {
 namespace {
 
 constexpr char kMagic[8] = {'M', 'V', 'D', 'B', '0', '0', '0', '1'};
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;
 
 void put_u8(std::string& out, uint8_t value) { out.push_back(static_cast<char>(value)); }
 
@@ -97,6 +97,8 @@ bool save_catalog(const std::string& path, const std::vector<TableMeta>& tables,
       put_i64(buffer, col.dim);
     }
     put_u32(buffer, static_cast<uint32_t>(table.pk_index));
+    put_u8(buffer, table.has_vector_index ? 1 : 0);
+    put_i64(buffer, table.vector_column);
   }
 
   const std::string tmp = path + ".tmp";
@@ -150,7 +152,7 @@ bool load_catalog(const std::string& path, std::vector<TableMeta>& tables,
   Reader reader(std::string_view(data).substr(sizeof(kMagic)));
   uint32_t version = 0;
   uint32_t table_count = 0;
-  if (!reader.u32(version) || version != kVersion) return false;
+  if (!reader.u32(version) || version == 0 || version > kVersion) return false;
   if (!reader.u32(next_table_id)) return false;
   if (!reader.u32(table_count)) return false;
   for (uint32_t i = 0; i < table_count; ++i) {
@@ -174,6 +176,18 @@ bool load_catalog(const std::string& path, std::vector<TableMeta>& tables,
     if (!reader.u32(pk_index)) return false;
     table.pk_index = pk_index;
     if (table.pk_index >= table.columns.size()) return false;
+    if (version >= 2) {
+      uint8_t has_index = 0;
+      int64_t vector_column = -1;
+      if (!reader.u8(has_index)) return false;
+      if (!reader.i64(vector_column)) return false;
+      table.has_vector_index = has_index != 0;
+      table.vector_column = static_cast<int32_t>(vector_column);
+      if (table.has_vector_index &&
+          (table.vector_column < 0 || static_cast<size_t>(table.vector_column) >= table.columns.size())) {
+        return false;
+      }
+    }
     tables.push_back(std::move(table));
   }
   return reader.done();

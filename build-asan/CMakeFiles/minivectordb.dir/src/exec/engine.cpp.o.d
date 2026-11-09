@@ -232,4 +232,5 @@ CMakeFiles/minivectordb.dir/src/exec/engine.cpp.o: \
  /home/xiangyv/proj/seekdb-round2/src/storage/catalog.h \
  /home/xiangyv/proj/seekdb-round2/src/storage/heap_file.h \
  /home/xiangyv/proj/seekdb-round2/src/storage/record.h \
+ /home/xiangyv/proj/seekdb-round2/src/vector/hnsw.h \
  /home/xiangyv/proj/seekdb-round2/src/util/util.h

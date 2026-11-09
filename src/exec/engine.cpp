@@ -17,6 +17,7 @@
 #include "storage/catalog.h"
 #include "storage/heap_file.h"
 #include "storage/record.h"
+#include "vector/hnsw.h"
 #include "util/util.h"
 
 namespace mvdb {
@@ -57,6 +58,8 @@ Engine::Engine(std::string data_dir, size_t pool_pages)
   if (!data_dir_.empty() && data_dir_.back() == '/') data_dir_.pop_back();
   catalog_path_ = data_dir_ + "/catalog.meta";
   wal_path_ = data_dir_ + "/wal.log";
+  if (const char* value = std::getenv("MVDB_EF_FLOOR")) ef_floor_ = std::strtoul(value, nullptr, 10);
+  if (const char* value = std::getenv("MVDB_EF_MAX")) ef_max_ = std::strtoul(value, nullptr, 10);
 }
 
 Engine::~Engine() {
@@ -139,10 +142,70 @@ bool Engine::open(std::string& error) {
       }
       state->pk_index->mark_built();
     }
+    if (state->meta.has_vector_index && state->meta.vector_column >= 0) {
+      // Rebuilt from the heap before the engine reports ready.
+      build_vector_index(*state);
+    }
     by_name_[lower(meta.name)] = meta.id;
     tables_[meta.id] = std::move(state);
   }
   return true;
+}
+
+ResultSet Engine::exec_create_vector_index(const Statement& stmt) {
+  TableState& table = require_table(stmt.table);
+  const size_t column = require_column(table.meta, stmt.index_column);
+  if (table.meta.columns[column].type != ColumnType::Vector) {
+    throw_sql_error(kErrIncorrectValue, "vector index requires a VECTOR column");
+  }
+  if (table.meta.has_vector_index) {
+    throw_sql_error(kErrNotSupported, "the table already has a vector index");
+  }
+  table.meta.has_vector_index = true;
+  table.meta.vector_column = static_cast<int32_t>(column);
+  build_vector_index(table);
+  if (!save_catalog()) {
+    table.meta.has_vector_index = false;
+    table.meta.vector_column = -1;
+    table.vec_index.reset();
+    throw_sql_error(kErrInternal, "cannot persist catalog");
+  }
+  undo_.push_back(UndoOp{UndoOp::Kind::CreatedVectorIndex, table.meta.id, 0, 0, {}});
+  return ResultSet{};
+}
+
+ResultSet Engine::exec_set_mode(const Statement& stmt) {
+  const std::string value = to_lower(stmt.mode_value);
+  if (value == "exact") {
+    mode_ = QueryMode::Exact;
+  } else if (value == "ann") {
+    mode_ = QueryMode::Ann;
+  } else {
+    throw_sql_error(kErrIncorrectValue, "mode must be 'exact' or 'ann'");
+  }
+  return ResultSet{};
+}
+
+void Engine::build_vector_index(TableState& table) {
+  const TableMeta& meta = table.meta;
+  if (meta.vector_column < 0 || static_cast<size_t>(meta.vector_column) >= meta.columns.size()) {
+    throw_sql_error(kErrInternal, "vector index refers to a missing column");
+  }
+  const int64_t dim = meta.columns[static_cast<size_t>(meta.vector_column)].dim;
+  // M=32: on uniform random 128-dim data M=16 tops out around 0.87 recall even
+  // at ef=256, while M=32 reaches ~0.97 for the same search budget.
+  table.vec_index = std::make_unique<VectorIndex>(dim, 32, 200,
+                                                  static_cast<uint64_t>(meta.id) * 7919 + 13);
+  table.heap->scan([&](RID rid, std::string_view bytes) {
+    std::vector<Value> row;
+    if (!decode_row(meta, bytes, row)) return;
+    const int64_t pk = row[meta.pk_index].i;
+    // Copy the vector before moving the row: argument evaluation order is
+    // unspecified, and moving first would leave this reference dangling.
+    const std::vector<float> vec = row[static_cast<size_t>(meta.vector_column)].v;
+    table.vec_index->add(pk, vec, std::move(row));
+  });
+  table.vec_dirty = false;
 }
 
 Engine::TableState& Engine::require_table(const std::string& name) {
@@ -335,6 +398,9 @@ ResultSet Engine::exec_insert(const Statement& stmt) {
       throw_sql_error(kErrInternal, "cannot allocate space for row");
     }
     table.pk_index->insert(pk, rid);
+    if (table.vec_index) {
+      table.vec_index->add(pk, values[static_cast<size_t>(table.meta.vector_column)].v, values);
+    }
     undo_.push_back(UndoOp{UndoOp::Kind::InsertedRow, table.meta.id, pk, rid, {}});
   }
   ResultSet rs;
@@ -360,6 +426,7 @@ ResultSet Engine::exec_delete(const Statement& stmt) {
   for (const Victim& victim : victims) {
     table.heap->erase(victim.rid);
     table.pk_index->erase(victim.pk);
+    if (table.vec_index) table.vec_index->remove(victim.pk);
     undo_.push_back(UndoOp{UndoOp::Kind::DeletedRow, table.meta.id, victim.pk, 0, victim.record});
   }
   ResultSet rs;
@@ -411,6 +478,12 @@ ResultSet Engine::exec_update(const Statement& stmt) {
       throw_sql_error(kErrInternal, "cannot allocate space for updated row");
     }
     table.pk_index->insert(target.pk, new_rid);
+    if (table.vec_index) {
+      table.vec_index->remove(target.pk);
+      table.vec_index->add(target.pk,
+                           target.new_values[static_cast<size_t>(table.meta.vector_column)].v,
+                           target.new_values);
+    }
     undo_.push_back(
         UndoOp{UndoOp::Kind::UpdatedRow, table.meta.id, target.pk, new_rid, target.old_record});
   }
@@ -494,7 +567,84 @@ ResultSet Engine::exec_select(const Statement& stmt) {
     int64_t pk = 0;
   };
   std::vector<OutRow> out_rows;
-  table.heap->scan([&](RID rid, std::string_view bytes) {
+
+  int dist_slot = -1;
+  for (size_t i = 0; i < specs.size(); ++i) {
+    if (!specs[i].is_distance) continue;
+    if (dist_slot >= 0) {
+      dist_slot = -2;
+      break;
+    }
+    dist_slot = static_cast<int>(i);
+  }
+  const bool ann_eligible =
+      mode_ == QueryMode::Ann && table.vec_index && stmt.has_limit && stmt.limit > 0 &&
+      dist_slot >= 0 && sort_keys.size() == 1 && sort_keys[0].out_index == dist_slot &&
+      sort_keys[0].asc;
+  bool used_ann = false;
+  if (ann_eligible) {
+    if (table.vec_dirty) build_vector_index(table);
+    const size_t k = static_cast<size_t>(stmt.limit);
+    const std::vector<float>& query = specs[static_cast<size_t>(dist_slot)].query;
+    const VectorIndex::AcceptFn accept = [&](const std::vector<Value>& row) {
+      return !stmt.has_where || matches(meta, row, stmt.where);
+    };
+    std::vector<VectorIndex::Hit> hits;
+    size_t ef = ef_floor_;
+    const bool debug_ann = std::getenv("MVDB_DEBUG_ANN") != nullptr;
+    while (true) {
+      VectorIndex::SearchStats stats;
+      hits = table.vec_index->search(query, k, ef, accept, &stats);
+      if (debug_ann) {
+        std::fprintf(stderr, "[ann] ef=%zu hits=%zu visited=%zu accepted=%zu\n", ef, hits.size(),
+                     stats.visited, stats.accepted);
+      }
+      // "Enough results" is not enough. A filtered query must widen the search
+      // by roughly 1/selectivity to see as many matching nodes as an
+      // unfiltered query would; otherwise the accepted set is too shallow and
+      // recall silently collapses.
+      if (hits.size() < k) {
+        if (ef >= ef_max_) break;
+        ef *= 2;
+        continue;
+      }
+      const double selectivity = stats.visited == 0
+                                     ? 1.0
+                                     : static_cast<double>(stats.accepted) / stats.visited;
+      const size_t needed = selectivity < 0.01
+                                ? ef_max_
+                                : static_cast<size_t>(static_cast<double>(ef_floor_) / selectivity);
+      const size_t target = std::min(std::max(ef, needed), ef_max_);
+      if (ef >= target) break;
+      ef = target;
+    }
+    if (hits.size() >= k) {
+      for (const VectorIndex::Hit& hit : hits) {
+        RID rid = 0;
+        if (!table.pk_index->search(hit.pk, rid)) continue;
+        std::string bytes;
+        if (!table.heap->read(rid, bytes)) continue;
+        std::vector<Value> row;
+        if (!decode_row(meta, bytes, row)) continue;
+        OutRow out;
+        out.pk = hit.pk;
+        for (const OutputSpec& spec : specs) {
+          if (spec.is_distance) {
+            Value v;
+            v.kind = Value::Kind::Float;
+            v.d = l2_distance(row[spec.table_index].v, spec.query);
+            out.raw.push_back(std::move(v));
+          } else {
+            out.raw.push_back(row[spec.table_index]);
+          }
+        }
+        for (size_t column : extra_columns) out.extras.push_back(row[column]);
+        out_rows.push_back(std::move(out));
+      }
+      used_ann = true;
+    }
+  }
+  if (!used_ann) table.heap->scan([&](RID rid, std::string_view bytes) {
     std::vector<Value> row;
     if (!decode_row(meta, bytes, row)) return;
     if (stmt.has_where && !matches(meta, row, stmt.where)) return;
@@ -608,6 +758,14 @@ void Engine::rollback_to(size_t mark) {
     auto it = tables_.find(op.table_id);
     if (it == tables_.end()) continue;
     TableState& table = *it->second;
+    if (op.kind == UndoOp::Kind::CreatedVectorIndex) {
+      table.meta.has_vector_index = false;
+      table.meta.vector_column = -1;
+      table.vec_index.reset();
+      table.vec_dirty = false;
+      continue;
+    }
+    if (table.vec_index) table.vec_dirty = true;
     switch (op.kind) {
       case UndoOp::Kind::InsertedRow:
         table.heap->erase(op.rid);
@@ -800,26 +958,31 @@ ResultSet Engine::execute(const Statement& stmt) {
       break;
   }
 
+  if (stmt.kind == Statement::Kind::SetMode) return exec_set_mode(stmt);
+  // Reads never need a log record; they run directly in the current snapshot.
+  if (stmt.kind == Statement::Kind::Select) return exec_select(stmt);
+
   const size_t mark = undo_.size();
-  begin_txn_scope();
+  const bool implicit = !in_txn_;
+  if (implicit) begin_txn_scope();
   try {
     ResultSet rs;
     switch (stmt.kind) {
       case Statement::Kind::CreateTable: rs = exec_create(stmt); break;
+      case Statement::Kind::CreateVectorIndex: rs = exec_create_vector_index(stmt); break;
       case Statement::Kind::Insert: rs = exec_insert(stmt); break;
-      case Statement::Kind::Select: rs = exec_select(stmt); break;
       case Statement::Kind::Update: rs = exec_update(stmt); break;
       case Statement::Kind::Delete: rs = exec_delete(stmt); break;
       default: throw_sql_error(kErrInternal, "unhandled statement kind");
     }
-    if (!in_txn_) {
+    if (implicit) {
       commit_txn();
       undo_.clear();
     }
     return rs;
   } catch (...) {
     rollback_to(mark);
-    if (!in_txn_) release_current_txn();
+    if (implicit) release_current_txn();
     throw;
   }
 }

@@ -84,6 +84,8 @@ struct Statement {
     Begin,
     Commit,
     Rollback,
+    CreateVectorIndex,
+    SetMode,
   };
 
   Kind kind = Kind::Select;
@@ -107,6 +109,13 @@ struct Statement {
 
   // UPDATE
   std::vector<std::pair<std::string, Value>> set_items;
+
+  // CREATE VECTOR INDEX
+  std::string index_name;
+  std::string index_column;
+
+  // SET mode = 'exact' | 'ann'
+  std::string mode_value;
 };
 
 // Parses a textual vector literal such as "[1, 2, 3]".

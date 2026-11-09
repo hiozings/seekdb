@@ -20,6 +20,9 @@ struct TableMeta {
   std::string name;
   std::vector<Column> columns;
   size_t pk_index = 0;
+  // Vector index definition; the index itself is rebuilt from the heap at open.
+  bool has_vector_index = false;
+  int32_t vector_column = -1;
 };
 
 }  // namespace mvdb

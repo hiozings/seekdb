@@ -25,6 +25,7 @@ add_executable(minivectordb
   src/storage/catalog.cpp
   src/storage/btree.cpp
   src/txn/wal.cpp
+  src/vector/hnsw.cpp
 )
 
 target_include_directories(minivectordb PRIVATE src)
@@ -42,9 +43,19 @@ if(MVDB_BUILD_TESTS)
     tests/storage/btree_test.cpp
     src/storage/btree.cpp
   src/txn/wal.cpp
+  src/vector/hnsw.cpp
     src/storage/buffer_pool.cpp
     src/storage/page.cpp
   )
   target_include_directories(btree_test PRIVATE src)
   target_link_libraries(btree_test PRIVATE Threads::Threads)
+
+  add_executable(hnsw_test
+    tests/storage/hnsw_test.cpp
+    src/vector/hnsw.cpp
+    src/sql/sql.cpp
+    src/util/util.cpp
+  )
+  target_include_directories(hnsw_test PRIVATE src)
+  target_link_libraries(hnsw_test PRIVATE Threads::Threads)
 endif()
