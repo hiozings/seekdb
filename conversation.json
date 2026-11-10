@@ -255,6 +255,18 @@
       "question": "/data 卷在容器重启后是否保留数据",
       "observation": "第一个容器写入两行后退出，第二个容器挂载同一目录查询返回 id=1、id=2。",
       "conclusion": "容器内持久化契约成立。"
+    },
+    {
+      "id": "E15-scale-reversal",
+      "question": "exact 与 ann 的成本交叉点在哪里",
+      "observation": "10000 行：exact 0.167 ms/查询，ann ef=256 为 0.180 ms、ef=1024 为 0.481 ms；100000 行：exact 2.92 ms/查询，ann ef=256 为 0.650 ms、ef=1024 为 2.080 ms（图检索不含 33.5 s 构建时间）。图检索访问节点数约 ef×M≈8k，全表扫描为 N 次。",
+      "conclusion": "学生关于“访问次数×单次成本会反转”的判断成立，且交叉点在 10k 与 100k 之间。同时暴露出局限：100k 规模下 ef=256 的 Recall@10 只有 0.71，要达到 0.95 需要更大 ef，成本优势会被吃掉一部分。"
+    },
+    {
+      "id": "E16-crash-invariants-check",
+      "question": "崩溃恢复的三条不变量是否真的成立",
+      "observation": "kill_test 对每个 trial 检查：已确认提交的行必须全部存在；BEGIN 后未提交的行一行都不得出现；COMMIT 已发送未确认时允许全有或全无；连续三次在恢复途中 kill 后必须收敛且无重复行。",
+      "conclusion": "实现用“no-steal + 只重放已提交事务”达到同样三条不变量，而不是学生描述的 undo/快照路线：未提交的页不会被换出到数据文件，因此恢复阶段根本不需要 undo。"
     }
   ],
   "instances": [
@@ -310,6 +322,48 @@
         "quote": "0.233 → 0.167 ms"
       },
       "note": "取舍由学生做出，测量由 Agent 完成。"
+    },
+    {
+      "dimension": "技术理解与迁移",
+      "level": 1.5,
+      "summary": "学生独立分析 exact 与 ann 的单次成本构成，并主动迁移到百万行量级预测成本反转；100k 规模实测证实了该判断（exact 2.92 ms vs ann 0.650 ms），交叉点落在 10k 与 100k 之间。",
+      "student_evidence": {
+        "pointer": "/student_analysis/0/content",
+        "quote": "ANN 的“3.3 万次图遍历”不是 3.3 万次便宜距离，而是包含随机访存、visited 集合、候选堆、邻居松弛、重复访问/锁等开销，单次贵很多"
+      },
+      "result_evidence": {
+        "pointer": "/experiments/14/conclusion",
+        "quote": "交叉点在 10k 与 100k 之间"
+      },
+      "note": "预测与机制分析由学生完成，100k 实验由 Agent 执行；结果同时暴露局限（100k 下 ef=256 召回仅 0.71），局限分析由 Agent 补充，故记 1.5 而非 2。"
+    },
+    {
+      "dimension": "技术理解与迁移",
+      "level": 1.0,
+      "summary": "学生准确说明位图索引的实现形态与适用边界（等值倒排），该边界与实测一致：只对单等值条件生效，其他形态回退逐行判断。",
+      "student_evidence": {
+        "pointer": "/student_analysis/1/content",
+        "quote": "实现是 value -> bitmap 的等值倒排，只支持“某列等于某值”直接取位图"
+      },
+      "result_evidence": {
+        "pointer": "/experiments/12/observation",
+        "quote": "0.233 → 0.167 ms"
+      },
+      "note": "学生对实现边界的描述准确；测量由 Agent 完成。"
+    },
+    {
+      "dimension": "独立验证与质疑",
+      "level": 1.0,
+      "summary": "学生独立写出崩溃恢复应满足的三条不变量，并给出机制设想（undo + 快照 + commit seq）。核对发现本实现走的是另一条路径（no-steal + 只重放已提交事务），但三条不变量同样成立，由 kill -9 测试逐条验证。",
+      "student_evidence": {
+        "pointer": "/student_analysis/2/content",
+        "quote": "已提交必在：提交 ack 前 WAL/commit record 必须 fsync"
+      },
+      "result_evidence": {
+        "pointer": "/experiments/15/conclusion",
+        "quote": "未提交的页不会被换出到数据文件，因此恢复阶段根本不需要 undo"
+      },
+      "note": "不变量由学生提出，机制差异与验证由 Agent 完成；学生描述了正确目标但未验证实现路径，故记 1.0。"
     }
   ],
   "retrospective": {
@@ -335,5 +389,25 @@
       "向量索引未持久化，首次 ann 查询需重建约 1.9 秒。",
       "无过滤查询已接近内存带宽下限，进一步提升需以正确性换速度（float 预选）。"
     ]
-  }
+  },
+  "student_analysis": [
+    {
+      "id": "A1-exact-vs-ann-scaling",
+      "question": "为什么 10000 行时 exact 比 ann 快？数据放大后结论会怎么变？",
+      "content": "猜测 10k 时：exact 是 1 万次连续内存扫描，距离计算可 SIMD、cache 友好；ANN 的“3.3 万次图遍历”不是 3.3 万次便宜距离，而是包含随机访存、visited 集合、候选堆、邻居松弛、重复访问/锁等开销，单次贵很多。百万后：exact 变成 100 万次线性扫描，内存带宽和 top-k 堆成本高；ANN 图遍历通常受 efSearch/层数约束，不是线性涨到 330 万，可能仍是几万到几十万次。于是“访问次数×单次成本”反转。",
+      "note": "学生独立给出的机制分析，并主动迁移到百万行量级。"
+    },
+    {
+      "id": "A2-bitmap-boundary",
+      "question": "位图索引支持哪些查询形态？其余怎么办？",
+      "content": "实现是 value -> bitmap 的等值倒排，只支持“某列等于某值”直接取位图",
+      "note": "准确指出现有实现的适用边界：等值倒排，范围/多条件不在其内。"
+    },
+    {
+      "id": "A3-crash-invariants",
+      "question": "崩溃恢复要保证哪些不变量？靠什么机制？",
+      "content": "已提交必在：提交 ack 前 WAL/commit record 必须 fsync；\n未提交不得部分生效：只有 commit 后数据才可见；批量写要么整体提交，要么恢复时 undo/忽略；读者看 committed snapshot；索引可见性也按 commit seq 控制。\n恢复可重入：每条 WAL 有 LSN/txn id，redo/undo 幂等；checkpoint 原子切换",
+      "note": "给出的是一般性 ARIES 式方案（undo + 快照 + commit seq）。本实现选择了另一条路径，见对应实例的修正说明。"
+    }
+  ]
 }
