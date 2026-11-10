@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace mvdb {
@@ -141,8 +142,9 @@ struct Statement {
 // Throws SqlError when the text is malformed or a value is not finite float32.
 std::vector<float> parse_vector_literal(const std::string& text);
 
-// Parses one statement without the trailing semicolon.
+// Parses one statement without the trailing semicolon. The passed view must
+// stay alive for the duration of the call; tokens reference it in place.
 // Throws SqlError on syntax errors or unsupported constructs.
-Statement parse_statement(const std::string& sql);
+Statement parse_statement(std::string_view sql);
 
 }  // namespace mvdb

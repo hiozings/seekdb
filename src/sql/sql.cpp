@@ -4,6 +4,7 @@
 #include <cmath>
 #include <system_error>
 #include <cctype>
+#include <deque>
 #include <limits>
 #include <utility>
 
@@ -59,10 +60,17 @@ enum class TokenKind {
   Plus,
 };
 
+// Tokens point into the statement buffer. Only string literals that need
+// unescaping are materialised, in `owned` (a deque, so views stay valid).
 struct Token {
   TokenKind kind = TokenKind::End;
-  std::string text;
+  std::string_view text;
   size_t pos = 0;
+};
+
+struct TokenStream {
+  std::vector<Token> tokens;
+  std::deque<std::string> owned;
 };
 
 [[noreturn]] void syntax_error(const std::string& detail) {
@@ -73,8 +81,9 @@ struct Token {
   throw SqlError{kIncomplete, detail};
 }
 
-std::vector<Token> tokenize(const std::string& sql) {
-  std::vector<Token> out;
+TokenStream tokenize(std::string_view sql) {
+  TokenStream stream;
+  std::vector<Token>& out = stream.tokens;
   size_t i = 0;
   const size_t n = sql.size();
   auto is_ident_start = [](char c) {
@@ -130,14 +139,14 @@ std::vector<Token> tokenize(const std::string& sql) {
       continue;
     }
     if (c == '\'') {
-      size_t start = i;
+      const size_t start = i;
       ++i;
-      std::string value;
+      bool escaped = false;
       bool closed = false;
       while (i < n) {
         if (sql[i] == '\'') {
           if (i + 1 < n && sql[i + 1] == '\'') {
-            value.push_back('\'');
+            escaped = true;
             i += 2;
             continue;
           }
@@ -145,12 +154,28 @@ std::vector<Token> tokenize(const std::string& sql) {
           closed = true;
           break;
         }
-        value.push_back(sql[i]);
         ++i;
       }
       if (!closed) syntax_error("unterminated string literal");
-      (void)start;
-      out.push_back(Token{TokenKind::StrLit, value, start});
+      if (!escaped) {
+        // Common case: a plain literal, referenced in place with no copy.
+        out.push_back(Token{TokenKind::StrLit, sql.substr(start + 1, i - 1 - (start + 1)), start});
+      } else {
+        std::string value;
+        value.reserve(i - start);
+        size_t k = start + 1;
+        while (k < i - 1) {
+          if (sql[k] == '\'' && k + 1 < i - 1 && sql[k + 1] == '\'') {
+            value.push_back('\'');
+            k += 2;
+            continue;
+          }
+          value.push_back(sql[k]);
+          ++k;
+        }
+        stream.owned.push_back(std::move(value));
+        out.push_back(Token{TokenKind::StrLit, stream.owned.back(), start});
+      }
       continue;
     }
     switch (c) {
@@ -185,8 +210,8 @@ std::vector<Token> tokenize(const std::string& sql) {
         syntax_error(std::string("unexpected character '") + c + "'");
     }
   }
-  out.push_back(Token{TokenKind::End, "", n});
-  return out;
+  out.push_back(Token{TokenKind::End, std::string_view(), n});
+  return stream;
 }
 
 // Converts a double to float, rejecting overflow and non-finite values.
@@ -241,13 +266,14 @@ std::vector<float> parse_vector_text(std::string_view text) {
 
 class Parser {
  public:
-  explicit Parser(std::vector<Token> tokens) : toks_(std::move(tokens)) {}
+  explicit Parser(TokenStream stream)
+      : toks_(std::move(stream.tokens)), owned_(std::move(stream.owned)) {}
 
   Statement parse() {
     Statement stmt;
     if (peek().kind == TokenKind::End) incomplete("empty statement");
     if (peek().kind != TokenKind::Ident) syntax_error("expected a statement keyword");
-    const std::string kw = to_lower(peek().text);
+    const std::string kw = to_lower(std::string(peek().text));
     if (kw == "create") {
       if (is_kw(peek(1), "vector")) {
         parse_create_vector_index(stmt);
@@ -290,10 +316,10 @@ class Parser {
       advance();
       if (is_kw(peek(), "work")) advance();
     } else {
-      throw_sql_error(kErrNotSupported, "unsupported statement '" + peek().text + "'");
+      throw_sql_error(kErrNotSupported, "unsupported statement '" + std::string(peek().text) + "'");
     }
     if (peek().kind != TokenKind::End) {
-      syntax_error("unexpected trailing token '" + peek().text + "'");
+      syntax_error("unexpected trailing token '" + std::string(peek().text) + "'");
     }
     return stmt;
   }
@@ -310,7 +336,7 @@ class Parser {
   }
 
   static bool is_kw(const Token& tok, const char* kw) {
-    return tok.kind == TokenKind::Ident && iequals(tok.text, kw);
+    return tok.kind == TokenKind::Ident && iequals(tok.text, std::string_view(kw));
   }
 
   bool accept_kw(const char* kw) {
@@ -344,7 +370,7 @@ class Parser {
   std::string expect_ident(const char* what) {
     if (peek().kind == TokenKind::End) incomplete(std::string("expected ") + what);
     if (peek().kind != TokenKind::Ident) syntax_error(std::string("expected ") + what);
-    std::string name = peek().text;
+    std::string name(peek().text);
     advance();
     return name;
   }
@@ -391,7 +417,7 @@ class Parser {
     if (peek().kind == TokenKind::IntLit) {
       int64_t value = 0;
       if (!parse_int64(peek().text, value)) {
-        throw_sql_error(kErrOutOfRange, "invalid integer literal '" + peek().text + "'");
+        throw_sql_error(kErrOutOfRange, "invalid integer literal '" + std::string(peek().text) + "'");
       }
       advance();
       Value v;
@@ -402,7 +428,7 @@ class Parser {
     if (peek().kind == TokenKind::FloatLit) {
       double d = 0.0;
       if (!parse_double(peek().text, d)) {
-        throw_sql_error(kErrOutOfRange, "invalid float literal '" + peek().text + "'");
+        throw_sql_error(kErrOutOfRange, "invalid float literal '" + std::string(peek().text) + "'");
       }
       advance();
       Value v;
@@ -415,13 +441,19 @@ class Parser {
 
   Value parse_literal() {
     if (peek().kind == TokenKind::StrLit) {
-      std::string text = peek().text;
+      const std::string_view text = peek().text;
       advance();
-      std::string trimmed = trim(text);
+      std::string_view trimmed = text;
+      while (!trimmed.empty() && std::isspace(static_cast<unsigned char>(trimmed.front()))) {
+        trimmed.remove_prefix(1);
+      }
+      while (!trimmed.empty() && std::isspace(static_cast<unsigned char>(trimmed.back()))) {
+        trimmed.remove_suffix(1);
+      }
       if (!trimmed.empty() && trimmed.front() == '[') {
         return Value::make_vec(parse_vector_text(text));
       }
-      return Value::make_str(std::move(text));
+      return Value::make_str(std::string(text));
     }
     if (peek().kind == TokenKind::LBracket) {
       return parse_vector_from_brackets();
@@ -756,6 +788,7 @@ class Parser {
   }
 
   std::vector<Token> toks_;
+  std::deque<std::string> owned_;
   size_t pos_ = 0;
 };
 
@@ -765,9 +798,8 @@ std::vector<float> parse_vector_literal(const std::string& text) {
   return parse_vector_text(text);
 }
 
-Statement parse_statement(const std::string& sql) {
-  std::vector<Token> tokens = tokenize(sql);
-  Parser parser(std::move(tokens));
+Statement parse_statement(std::string_view sql) {
+  Parser parser(tokenize(sql));
   return parser.parse();
 }
 

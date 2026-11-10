@@ -135,7 +135,17 @@ void StatementSplitter::feed(std::string_view chunk) {
   buf_.push_back('\n');
 }
 
-bool StatementSplitter::next(std::string& out) {
+void StatementSplitter::compact() {
+  if (start_ == 0) return;
+  buf_.erase(0, start_);
+  scan_ -= start_;
+  start_ = 0;
+}
+
+bool StatementSplitter::next(std::string_view& out) {
+  // Compaction moves the buffer, so it may only run before a new view is
+  // produced: the previous view has been consumed by the caller by now.
+  if (start_ > (1u << 16)) compact();
   bool in_string = false;
   bool in_line_comment = false;
   bool in_block_comment = false;
@@ -177,9 +187,9 @@ bool StatementSplitter::next(std::string& out) {
       continue;
     }
     if (c == ';') {
-      out = buf_.substr(0, i);
-      buf_.erase(0, i + 1);
-      scan_ = 0;
+      out = std::string_view(buf_).substr(start_, i - start_);
+      start_ = i + 1;
+      scan_ = start_;
       return true;
     }
   }
@@ -187,19 +197,25 @@ bool StatementSplitter::next(std::string& out) {
   return false;
 }
 
-std::string StatementSplitter::flush_remaining() {
-  std::string rest = trim(buf_);
+std::string_view StatementSplitter::flush_remaining() {
+  std::string_view rest = trim_view(std::string_view(buf_).substr(start_));
   buf_.clear();
+  start_ = 0;
   scan_ = 0;
   return rest;
 }
 
-bool StatementSplitter::empty() const { return trim(buf_).empty(); }
+bool StatementSplitter::empty() const {
+  return trim_view(std::string_view(buf_).substr(start_)).empty();
+}
 
-std::string StatementSplitter::pending() const { return trim(buf_); }
+std::string_view StatementSplitter::pending() const {
+  return trim_view(std::string_view(buf_).substr(start_));
+}
 
 void StatementSplitter::clear_pending() {
   buf_.clear();
+  start_ = 0;
   scan_ = 0;
 }
 

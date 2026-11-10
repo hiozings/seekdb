@@ -63,8 +63,8 @@ void print_help() {
                "  MVDB_OK_FMT        text          text used by MVDB_DML_OUTPUT=ok\n");
 }
 
-bool is_exit_command(const std::string& text) {
-  const std::string t = mvdb::to_lower(mvdb::trim(text));
+bool is_exit_command(std::string_view text) {
+  const std::string t = mvdb::to_lower(mvdb::trim_view(text));
   return t == "quit" || t == "exit" || t == "\\q" || t == "bye";
 }
 
@@ -72,7 +72,7 @@ bool is_exit_command(const std::string& text) {
 // Detects a leading `/* mode=ann */` style hint. The official task package
 // decides how exact/ann is selected; this keeps a second channel available in
 // case the driver uses a comment instead of a statement.
-bool apply_mode_comment(const std::string& text, mvdb::Engine& engine) {
+bool apply_mode_comment(std::string_view text, mvdb::Engine& engine) {
   const size_t open = text.find("/*");
   if (open == std::string::npos) return false;
   const size_t close = text.find("*/", open + 2);
@@ -94,15 +94,15 @@ bool apply_mode_comment(const std::string& text, mvdb::Engine& engine) {
   return false;
 }
 
-bool handle_statement(const std::string& raw, mvdb::Engine& engine, mvdb::OutputWriter& writer,
+bool handle_statement(std::string_view raw, mvdb::Engine& engine, mvdb::OutputWriter& writer,
                       const Options& opts) {
-  const std::string text = mvdb::trim(raw);
+  const std::string_view text = mvdb::trim_view(raw);
   if (text.empty()) return true;
   if (is_exit_command(text)) return false;
   apply_mode_comment(text, engine);
 
   if (opts.probe) {
-    std::fprintf(stderr, "[probe] statement: %s\n", text.c_str());
+    std::fprintf(stderr, "[probe] statement: %.*s\n", static_cast<int>(text.size()), text.data());
   }
 
   const auto parse_started = std::chrono::steady_clock::now();
@@ -199,7 +199,7 @@ int main(int argc, char** argv) {
 
   mvdb::StatementSplitter splitter;
   std::string line;
-  std::string statement;
+  std::string_view statement;
   bool running = true;
   while (running && std::getline(std::cin, line)) {
     // A bare exit command on its own line ends the session even though it is
@@ -242,7 +242,7 @@ int main(int argc, char** argv) {
     // lines means the driver is using ';' termination and a multi-line
     // statement, which must not be executed early.
     if (running && !splitter.empty()) {
-      const std::string pending = splitter.pending();
+      const std::string_view pending = splitter.pending();
       bool complete = pending.find('\n') == std::string::npos;
       try {
         mvdb::parse_statement(pending);
@@ -257,7 +257,7 @@ int main(int argc, char** argv) {
     }
   }
   if (running) {
-    const std::string rest = splitter.flush_remaining();
+    const std::string_view rest = splitter.flush_remaining();
     if (!rest.empty()) {
       handle_statement(rest, engine, writer, opts);
     }

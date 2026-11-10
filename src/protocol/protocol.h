@@ -40,18 +40,22 @@ const char* error_name(int code);
 class StatementSplitter {
  public:
   void feed(std::string_view chunk);
-  // Extracts the next complete statement, if any.
-  bool next(std::string& out);
+  // Extracts the next complete statement as a view into the internal buffer.
+  // The view is valid until the next feed().
+  bool next(std::string_view& out);
   // Returns the remaining buffered text (used at end of input).
-  std::string flush_remaining();
+  std::string_view flush_remaining();
   // True when no partial statement is pending.
   bool empty() const;
   // Trimmed pending text, without consuming it.
-  std::string pending() const;
+  std::string_view pending() const;
   void clear_pending();
 
  private:
+  void compact();
+
   std::string buf_;
+  size_t start_ = 0;  // first unconsumed byte
   size_t scan_ = 0;
 };
 

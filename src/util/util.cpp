@@ -28,6 +28,18 @@ std::string trim(std::string_view s) {
   return std::string(s.substr(begin, end - begin));
 }
 
+std::string_view trim_view(std::string_view s) {
+  size_t begin = 0;
+  size_t end = s.size();
+  while (begin < end && (s[begin] == ' ' || s[begin] == '\t' || s[begin] == '\r' || s[begin] == '\n')) {
+    ++begin;
+  }
+  while (end > begin && (s[end - 1] == ' ' || s[end - 1] == '\t' || s[end - 1] == '\r' || s[end - 1] == '\n')) {
+    --end;
+  }
+  return s.substr(begin, end - begin);
+}
+
 bool iequals(std::string_view a, std::string_view b) {
   if (a.size() != b.size()) return false;
   for (size_t i = 0; i < a.size(); ++i) {

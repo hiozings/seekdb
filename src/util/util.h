@@ -9,6 +9,7 @@ namespace mvdb {
 
 std::string to_lower(std::string_view s);
 std::string trim(std::string_view s);
+std::string_view trim_view(std::string_view s);
 bool iequals(std::string_view a, std::string_view b);
 bool istarts_with(std::string_view s, std::string_view prefix);
 
