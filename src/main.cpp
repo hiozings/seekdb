@@ -1,3 +1,4 @@
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
@@ -104,8 +105,12 @@ bool handle_statement(const std::string& raw, mvdb::Engine& engine, mvdb::Output
     std::fprintf(stderr, "[probe] statement: %s\n", text.c_str());
   }
 
+  const auto parse_started = std::chrono::steady_clock::now();
   try {
     mvdb::Statement stmt = mvdb::parse_statement(text);
+    engine.add_parse_ms(
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - parse_started)
+            .count());
     mvdb::ResultSet rs = engine.execute(stmt);
     if (opts.probe) {
       std::fprintf(stderr, "[probe] result: rows=%zu affected=%lld\n", rs.rows.size(),
@@ -270,6 +275,9 @@ int main(int argc, char** argv) {
                  static_cast<unsigned long long>(t.rows_scanned),
                  t.ann_queries ? static_cast<double>(t.ann_ef_total) / static_cast<double>(t.ann_queries) : 0.0,
                  t.select_scan_ms, t.select_ann_ms, t.commit_ms, t.index_build_ms);
+    std::fprintf(stderr, "[stats] insert_encode_ms=%.1f insert_heap_ms=%.1f insert_index_ms=%.1f\n",
+                 t.insert_encode_ms, t.insert_heap_ms, t.insert_index_ms);
+    std::fprintf(stderr, "[stats] parse_ms=%.1f\n", t.parse_ms);
   }
   return 0;
 }

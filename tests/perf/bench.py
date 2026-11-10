@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -40,12 +41,15 @@ STAT_PATTERNS = {
     "rows_scanned": re.compile(r"rows_scanned=(\d+)"),
     "avg_ef": re.compile(r"avg_ef=([\d.]+)"),
     "ann_queries": re.compile(r"ann_queries=(\d+)"),
+    "insert_encode_ms": re.compile(r"insert_encode_ms=([\d.]+)"),
+    "insert_heap_ms": re.compile(r"insert_heap_ms=([\d.]+)"),
+    "insert_index_ms": re.compile(r"insert_index_ms=([\d.]+)"),
 }
 
 
-def run(binary: Path, data_dir: Path, sql_path: Path, timeout: int = 3600):
+def run(binary: Path, data_dir: Path, sql_path: Path, output_format: str, timeout: int = 3600):
     env = os.environ.copy()
-    env["MVDB_FORMAT"] = "text"
+    env["MVDB_FORMAT"] = output_format
     with sql_path.open("rb") as fin:
         proc = subprocess.run(
             [str(binary), "--data-dir", str(data_dir), "--stats"],
@@ -113,6 +117,7 @@ def main() -> int:
     parser.add_argument("--out", default="")
     parser.add_argument("--keep", action="store_true")
     parser.add_argument("--no-index", action="store_true", help="skip CREATE VECTOR INDEX")
+    parser.add_argument("--format", default="json", choices=["json", "text"])
     args = parser.parse_args()
 
     binary = Path(args.bin).resolve()
@@ -135,23 +140,23 @@ def main() -> int:
         load_sql = work / "load.sql"
         write_load_sql(load_sql, matrix, categories, args.batch, not args.no_index)
         started = time.time()
-        _, load_stats = run(binary, data_dir, load_sql)
+        _, load_stats = run(binary, data_dir, load_sql, args.format)
         load_seconds = time.time() - started
 
         query_sql = work / "query.sql"
         write_query_sql(query_sql, queries, query_categories, filtered, args.k, args.mode)
         started = time.time()
-        stdout, query_stats = run(binary, data_dir, query_sql)
+        stdout, query_stats = run(binary, data_dir, query_sql, args.format)
         query_seconds = time.time() - started
 
         # Process startup (open + index rebuild) measured separately.
         empty = work / "empty.sql"
         empty.write_text("", encoding="utf-8")
         started = time.time()
-        _, startup_stats = run(binary, data_dir, empty)
+        _, startup_stats = run(binary, data_dir, empty, args.format)
         startup_seconds = time.time() - started
 
-        result_rows = len([line for line in stdout.splitlines() if line.strip()]) - args.queries
+        result_rows = len([line for line in stdout.splitlines() if line.strip()])
         report = {
             "rows": args.rows,
             "dim": args.dim,

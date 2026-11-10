@@ -1,6 +1,8 @@
 #include "sql/sql.h"
 
+#include <charconv>
 #include <cmath>
+#include <system_error>
 #include <cctype>
 #include <limits>
 #include <utility>
@@ -199,20 +201,40 @@ float to_float32(double value, const char* what) {
   return f;
 }
 
-std::vector<float> parse_vector_text(const std::string& text) {
-  std::string inner = trim(text);
-  if (inner.size() < 2 || inner.front() != '[' || inner.back() != ']') {
+std::vector<float> parse_vector_text(std::string_view text) {
+  // Parsed in place: the previous implementation split the text into one
+  // std::string per element and trimmed each, which dominated bulk inserts.
+  size_t begin = 0;
+  size_t end = text.size();
+  while (begin < end && std::isspace(static_cast<unsigned char>(text[begin]))) ++begin;
+  while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1]))) --end;
+  if (end - begin < 2 || text[begin] != '[' || text[end - 1] != ']') {
     throw_sql_error(kErrIncorrectValue, "vector literal must be [v1, v2, ...]");
   }
-  inner = inner.substr(1, inner.size() - 2);
+  std::string_view inner = text.substr(begin + 1, end - begin - 2);
   std::vector<float> out;
-  if (trim(inner).empty()) return out;
-  for (const std::string& part : split(inner, ',')) {
-    double d = 0.0;
-    if (!parse_double(part, d)) {
-      throw_sql_error(kErrIncorrectValue, "invalid number in vector literal: " + trim(part));
+  out.reserve(inner.size() / 8 + 1);
+  size_t i = 0;
+  while (i < inner.size()) {
+    while (i < inner.size() &&
+           (inner[i] == ' ' || inner[i] == '\t' || inner[i] == ',' || inner[i] == '\n')) {
+      ++i;
     }
-    out.push_back(to_float32(d, "vector literal"));
+    if (i >= inner.size()) break;
+    const char* first = inner.data() + i;
+    const char* last = inner.data() + inner.size();
+    double value = 0.0;
+    const auto result = std::from_chars(first, last, value, std::chars_format::general);
+    if (result.ec != std::errc() || result.ptr == first) {
+      throw_sql_error(kErrIncorrectValue,
+                      "invalid number in vector literal: " + std::string(first, 16));
+    }
+    out.push_back(to_float32(value, "vector literal"));
+    i = static_cast<size_t>(result.ptr - inner.data());
+    if (i < inner.size() && inner[i] != ',' && inner[i] != ' ' && inner[i] != '\t' &&
+        inner[i] != '\n') {
+      throw_sql_error(kErrIncorrectValue, "invalid character in vector literal");
+    }
   }
   return out;
 }

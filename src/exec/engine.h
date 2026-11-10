@@ -60,8 +60,13 @@ class Engine {
     uint64_t ann_queries = 0;
     uint64_t ann_ef_total = 0;
     uint64_t wal_bytes = 0;
+    double insert_encode_ms = 0.0;
+    double insert_heap_ms = 0.0;
+    double insert_index_ms = 0.0;
+    double parse_ms = 0.0;
   };
   const Timings& timings() const { return timings_; }
+  void add_parse_ms(double ms) { timings_.parse_ms += ms; }
 
   enum class QueryMode { Exact, Ann };
   void set_mode(QueryMode mode) { mode_ = mode; }
@@ -77,6 +82,21 @@ class Engine {
   void shutdown();
 
  private:
+  // Column-oriented copy of a table used by Top-K scans. Vectors are stored
+  // contiguously so the scan streams at memory bandwidth instead of walking
+  // slotted pages; scalar columns are kept in an arena for filtering. The
+  // cache is invalidated by any row modification.
+  struct ScanCache {
+    bool valid = false;
+    int vector_column = -1;
+    int64_t dim = 0;
+    size_t row_count = 0;
+    std::vector<int64_t> ids;
+    std::vector<float> vectors;
+    std::vector<char> scalars;          // packed non-vector columns
+    std::vector<uint32_t> offsets;      // row_count + 1 offsets into `scalars`
+  };
+
   struct TableState {
     TableMeta meta;
     std::unique_ptr<HeapFile> heap;
@@ -84,6 +104,7 @@ class Engine {
     std::unique_ptr<VectorIndex> vec_index;
     // Set when a rollback may have left the graph stale; rebuilt before use.
     bool vec_dirty = false;
+    ScanCache cache;
   };
 
   struct UndoOp {
@@ -126,6 +147,11 @@ class Engine {
   ResultSet exec_drop_table(const Statement& stmt);
   ResultSet exec_set_mode(const Statement& stmt);
   void build_vector_index(TableState& table);
+  void invalidate_cache(TableState& table) { table.cache.valid = false; }
+  void ensure_scan_cache(TableState& table, int vector_column);
+  bool cached_row_matches(const TableMeta& meta,
+                          const std::vector<PreparedCondition>& prepared, int vector_column,
+                          const char* scalars) const;
 
   void rollback_to(size_t mark);
   void begin_txn_scope();
@@ -161,6 +187,8 @@ class Engine {
   QueryMode mode_ = QueryMode::Exact;
   size_t ef_floor_ = 256;
   size_t ef_max_ = 1024;
+  // Above this size the column cache is skipped and scans stream from pages.
+  size_t cache_budget_bytes_ = 96 * 1024 * 1024;
 };
 
 }  // namespace mvdb

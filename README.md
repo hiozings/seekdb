@@ -143,15 +143,15 @@ docker run --rm -i -v minivectordb-data:/data --cpus=2 --memory=2g minivectordb:
 
 | 指标 | 结果 |
 | --- | ---: |
-| 批量写入（100 批，无索引） | 0.30 s |
-| 1000 次查询（exact） | 0.36 s（0.36 ms/查询） |
-| 峰值内存 | 11.4 MiB |
+| 批量写入（100 批，无索引） | 0.22 s |
+| 1000 次查询（exact，JSON 协议） | 0.25 s（0.25 ms/查询） |
+| 峰值内存 | 11.5 MiB |
 | 打开数据库 | 2 ms |
 
 复现：`python3 tests/perf/bench.py --queries 1000 --mode exact --no-index`
 
-**模式选择结论**：该数据规模下精确扫描（0.36 ms/查询）比 HNSW（ef 升到 1024 后约
-0.6–0.8 ms/查询）更快，且召回恒为 1.0。因此正式提交采用 `exact` 模式；
+**模式选择结论**：该数据规模下精确扫描（0.25 ms/查询）比 HNSW（ef 升到 1024 后约
+1 ms/查询）更快，且召回恒为 1.0。因此正式提交采用 `exact` 模式；
 HNSW 与 ann 模式完整保留，供近似检索用例与更大数据规模使用。
 
 ## 6. 错误码

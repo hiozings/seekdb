@@ -55,6 +55,12 @@ int compare_values(const Value& a, const Value& b) {
 
 }  // namespace
 
+struct PreparedCondition {
+  size_t column;
+  Condition::Op op;
+  Value value;
+};
+
 Engine::Engine(std::string data_dir, size_t pool_pages)
     : data_dir_(std::move(data_dir)), pool_pages_(pool_pages) {
   if (!data_dir_.empty() && data_dir_.back() == '/') data_dir_.pop_back();
@@ -196,6 +202,131 @@ ResultSet Engine::exec_set_mode(const Statement& stmt) {
   return ResultSet{};
 }
 
+void Engine::ensure_scan_cache(TableState& table, int vector_column) {
+  if (table.cache.valid && table.cache.vector_column == vector_column) return;
+  const TableMeta& meta = table.meta;
+  if (vector_column < 0) return;
+  const int64_t dim = meta.columns[static_cast<size_t>(vector_column)].dim;
+  const size_t rows = table.pk_index ? static_cast<size_t>(table.pk_index->size()) : 0;
+  const size_t bytes = rows * (static_cast<size_t>(dim) * sizeof(float) + sizeof(int64_t) + 16);
+  if (bytes > cache_budget_bytes_ || rows == 0) return;
+
+  ScanCache cache;
+  cache.vector_column = vector_column;
+  cache.dim = dim;
+  cache.ids.reserve(rows);
+  cache.vectors.reserve(rows * static_cast<size_t>(dim));
+  cache.offsets.reserve(rows + 1);
+  cache.offsets.push_back(0);
+
+  bool consistent = true;
+  std::string row_scalars;
+  table.heap->scan([&](RID rid, std::string_view bytes_view) {
+    if (!consistent) return;
+    int64_t pk = 0;
+    bool have_pk = false;
+    const float* vec = nullptr;
+    size_t pos = 0;
+    row_scalars.clear();
+    for (size_t i = 0; i < meta.columns.size(); ++i) {
+      const Column& column = meta.columns[i];
+      if (static_cast<int>(i) == vector_column) {
+        const size_t need = static_cast<size_t>(column.dim) * sizeof(float);
+        if (pos + need > bytes_view.size()) {
+          consistent = false;
+          return;
+        }
+        vec = reinterpret_cast<const float*>(bytes_view.data() + pos);
+        pos += need;
+        continue;
+      }
+      if (column.type == ColumnType::BigInt) {
+        if (pos + sizeof(int64_t) > bytes_view.size()) {
+          consistent = false;
+          return;
+        }
+        int64_t value = 0;
+        std::memcpy(&value, bytes_view.data() + pos, sizeof(value));
+        if (i == meta.pk_index) {
+          pk = value;
+          have_pk = true;
+        }
+        row_scalars.append(bytes_view.data() + pos, sizeof(int64_t));
+        pos += sizeof(int64_t);
+      } else {
+        if (pos + sizeof(uint32_t) > bytes_view.size()) {
+          consistent = false;
+          return;
+        }
+        uint32_t len = 0;
+        std::memcpy(&len, bytes_view.data() + pos, sizeof(len));
+        if (pos + sizeof(uint32_t) + len > bytes_view.size()) {
+          consistent = false;
+          return;
+        }
+        row_scalars.append(bytes_view.data() + pos, sizeof(uint32_t) + len);
+        pos += sizeof(uint32_t) + len;
+      }
+    }
+    if (!have_pk || vec == nullptr || pos != bytes_view.size()) {
+      consistent = false;
+      return;
+    }
+    cache.ids.push_back(pk);
+    cache.vectors.insert(cache.vectors.end(), vec, vec + dim);
+    cache.scalars.insert(cache.scalars.end(), row_scalars.begin(), row_scalars.end());
+    cache.offsets.push_back(static_cast<uint32_t>(cache.scalars.size()));
+  });
+
+  if (!consistent || cache.ids.size() != rows) return;
+  table.cache = std::move(cache);
+  table.cache.valid = true;
+}
+
+bool Engine::cached_row_matches(const TableMeta& meta,
+                                const std::vector<PreparedCondition>& prepared,
+                                int vector_column, const char* scalars) const {
+  size_t pos = 0;
+  for (size_t i = 0; i < meta.columns.size(); ++i) {
+    const Column& column = meta.columns[i];
+    if (static_cast<int>(i) == vector_column) continue;
+    if (column.type == ColumnType::BigInt) {
+      for (const PreparedCondition& cond : prepared) {
+        if (cond.column != i) continue;
+        int64_t stored = 0;
+        std::memcpy(&stored, scalars + pos, sizeof(stored));
+        const int cmp = stored < cond.value.i ? -1 : (stored > cond.value.i ? 1 : 0);
+        const bool ok = cond.op == Condition::Op::Eq   ? cmp == 0
+                        : cond.op == Condition::Op::Lt ? cmp < 0
+                        : cond.op == Condition::Op::Le ? cmp <= 0
+                        : cond.op == Condition::Op::Gt ? cmp > 0
+                                                       : cmp >= 0;
+        if (!ok) return false;
+      }
+      pos += sizeof(int64_t);
+    } else {
+      uint32_t len = 0;
+      std::memcpy(&len, scalars + pos, sizeof(len));
+      const char* data = scalars + pos + sizeof(uint32_t);
+      for (const PreparedCondition& cond : prepared) {
+        if (cond.column != i) continue;
+        const std::string& expected = cond.value.s;
+        const size_t common = std::min<size_t>(len, expected.size());
+        int cmp = std::memcmp(data, expected.data(), common);
+        if (cmp == 0) cmp = len < expected.size() ? -1 : (len > expected.size() ? 1 : 0);
+        const bool ok = cond.op == Condition::Op::Eq   ? cmp == 0
+                        : cond.op == Condition::Op::Lt ? cmp < 0
+                        : cond.op == Condition::Op::Le ? cmp <= 0
+                        : cond.op == Condition::Op::Gt ? cmp > 0
+                                                       : cmp >= 0;
+        if (!ok) return false;
+      }
+      pos += sizeof(uint32_t) + len;
+    }
+  }
+  return true;
+}
+
 void Engine::build_vector_index(TableState& table) {
   const auto started = std::chrono::steady_clock::now();
   const TableMeta& meta = table.meta;
@@ -303,12 +434,6 @@ Value Engine::coerce(const TableMeta& meta, size_t column_index, const Value& in
   }
   throw_sql_error(kErrInternal, "unreachable coercion path");
 }
-
-struct PreparedCondition {
-  size_t column;
-  Condition::Op op;
-  Value value;
-};
 
 std::vector<PreparedCondition> Engine::prepare_filter(const TableMeta& meta,
                                                       const std::vector<Condition>& conds) const {
@@ -530,12 +655,22 @@ ResultSet Engine::exec_insert(const Statement& stmt) {
       throw_sql_error(kErrDuplicateKey, "Duplicate entry '" + std::to_string(pk) +
                                             "' for key 'PRIMARY'");
     }
+    const auto t_encode = std::chrono::steady_clock::now();
     const std::string encoded = encode_row(table.meta, values);
+    const auto t_heap = std::chrono::steady_clock::now();
     const RID rid = table.heap->insert(encoded);
     if (rid == kInvalidRid) {
       throw_sql_error(kErrInternal, "cannot allocate space for row");
     }
+    const auto t_index = std::chrono::steady_clock::now();
     table.pk_index->insert(pk, rid);
+    const auto t_done = std::chrono::steady_clock::now();
+    timings_.insert_encode_ms +=
+        std::chrono::duration<double, std::milli>(t_heap - t_encode).count();
+    timings_.insert_heap_ms += std::chrono::duration<double, std::milli>(t_index - t_heap).count();
+    timings_.insert_index_ms +=
+        std::chrono::duration<double, std::milli>(t_done - t_index).count();
+    invalidate_cache(table);
     if (table.vec_index) {
       table.vec_index->add(pk, values[static_cast<size_t>(table.meta.vector_column)].v, values);
     }
@@ -565,6 +700,7 @@ ResultSet Engine::exec_delete(const Statement& stmt) {
   for (const Victim& victim : victims) {
     table.heap->erase(victim.rid);
     table.pk_index->erase(victim.pk);
+    invalidate_cache(table);
     if (table.vec_index) table.vec_index->remove(victim.pk);
     undo_.push_back(UndoOp{UndoOp::Kind::DeletedRow, table.meta.id, victim.pk, 0, victim.record});
   }
@@ -618,6 +754,7 @@ ResultSet Engine::exec_update(const Statement& stmt) {
       throw_sql_error(kErrInternal, "cannot allocate space for updated row");
     }
     table.pk_index->insert(target.pk, new_rid);
+    invalidate_cache(table);
     if (table.vec_index) {
       table.vec_index->remove(target.pk);
       table.vec_index->add(target.pk,
@@ -835,25 +972,47 @@ ResultSet Engine::exec_select(const Statement& stmt) {
     const size_t dim = query.size();
     std::vector<std::pair<double, int64_t>> top;  // max-heap: worst kept entry on top
     top.reserve(limit + 1);
-    table.heap->scan([&](RID rid, std::string_view bytes) {
-      ++timings_.rows_scanned;
-      RawRow raw;
-      if (!locate_raw_row(meta, bytes, prepared, vec_column, raw)) return;
-      if (raw.vec == nullptr || raw.pk == nullptr) return;
-      if (!prepared.empty() && !raw_row_matches(prepared, raw)) return;
-      const double distance = l2_exact(raw.vec, query.data(), dim);
-      int64_t pk = 0;
-      std::memcpy(&pk, raw.pk, sizeof(pk));
+    auto consider = [&](double distance, int64_t pk) {
       const auto entry = std::make_pair(distance, pk);
       if (top.size() < limit) {
         top.push_back(entry);
         std::push_heap(top.begin(), top.end());
-      } else if (std::make_pair(distance, pk) < top.front()) {
+      } else if (entry < top.front()) {
         std::pop_heap(top.begin(), top.end());
         top.back() = entry;
         std::push_heap(top.begin(), top.end());
       }
-    });
+    };
+
+    // Column cache: vectors are contiguous, so the scan streams at memory
+    // bandwidth instead of walking slotted pages and recomputing offsets.
+    ensure_scan_cache(table, vec_column);
+    if (table.cache.valid && static_cast<size_t>(table.cache.dim) == dim) {
+      const ScanCache& cache = table.cache;
+      const size_t rows = cache.ids.size();
+      timings_.rows_scanned += rows;
+      const bool filtered = !prepared.empty();
+      for (size_t r = 0; r < rows; ++r) {
+        if (filtered && !cached_row_matches(meta, prepared, cache.vector_column,
+                                            cache.scalars.data() + cache.offsets[r])) {
+          continue;
+        }
+        const float* vec = cache.vectors.data() + r * dim;
+        consider(l2_exact(vec, query.data(), dim), cache.ids[r]);
+      }
+    } else {
+      table.heap->scan([&](RID rid, std::string_view bytes) {
+        ++timings_.rows_scanned;
+        RawRow raw;
+        if (!locate_raw_row(meta, bytes, prepared, vec_column, raw)) return;
+        if (raw.vec == nullptr || raw.pk == nullptr) return;
+        if (!prepared.empty() && !raw_row_matches(prepared, raw)) return;
+        const double distance = l2_exact(raw.vec, query.data(), dim);
+        int64_t pk = 0;
+        std::memcpy(&pk, raw.pk, sizeof(pk));
+        consider(distance, pk);
+      });
+    }
     std::sort(top.begin(), top.end());
     for (const auto& [distance, pk] : top) {
       RID rid = 0;
@@ -1014,6 +1173,7 @@ void Engine::rollback_to(size_t mark) {
       table.vec_dirty = false;
       continue;
     }
+    invalidate_cache(table);
     if (table.vec_index) table.vec_dirty = true;
     switch (op.kind) {
       case UndoOp::Kind::InsertedRow:
