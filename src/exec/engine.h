@@ -97,6 +97,16 @@ class Engine {
     std::vector<uint32_t> offsets;      // row_count + 1 offsets into `scalars`
   };
 
+  // Per-column equality bitmaps over the scan cache. Built lazily on the first
+  // equality filter and dropped with the cache, so they can never go stale.
+  struct ColumnBitmaps {
+    bool valid = false;
+    int column = -1;
+    std::vector<uint64_t> words;                      // rows rounded up to 64
+    std::unordered_map<int64_t, std::vector<uint64_t>> int_values;
+    std::unordered_map<std::string, std::vector<uint64_t>> str_values;
+  };
+
   struct TableState {
     TableMeta meta;
     std::unique_ptr<HeapFile> heap;
@@ -105,6 +115,7 @@ class Engine {
     // Set when a rollback may have left the graph stale; rebuilt before use.
     bool vec_dirty = false;
     ScanCache cache;
+    ColumnBitmaps bitmaps;
   };
 
   struct UndoOp {
@@ -147,8 +158,12 @@ class Engine {
   ResultSet exec_drop_table(const Statement& stmt);
   ResultSet exec_set_mode(const Statement& stmt);
   void build_vector_index(TableState& table);
-  void invalidate_cache(TableState& table) { table.cache.valid = false; }
+  void invalidate_cache(TableState& table) {
+    table.cache.valid = false;
+    table.bitmaps = ColumnBitmaps{};
+  }
   void ensure_scan_cache(TableState& table, int vector_column);
+  void ensure_bitmap_index(TableState& table, int column);
   bool cached_row_matches(const TableMeta& meta,
                           const std::vector<PreparedCondition>& prepared, int vector_column,
                           const char* scalars) const;

@@ -283,6 +283,67 @@ void Engine::ensure_scan_cache(TableState& table, int vector_column) {
   table.cache.valid = true;
 }
 
+void Engine::ensure_bitmap_index(TableState& table, int column) {
+  ColumnBitmaps& bitmaps = table.bitmaps;
+  if (bitmaps.valid && bitmaps.column == column) return;
+  bitmaps = ColumnBitmaps{};
+  if (!table.cache.valid || column < 0) return;
+  const TableMeta& meta = table.meta;
+  const ScanCache& cache = table.cache;
+  const size_t rows = cache.ids.size();
+  if (rows == 0) return;
+  const size_t words = (rows + 63) / 64;
+  const bool is_int = meta.columns[static_cast<size_t>(column)].type == ColumnType::BigInt;
+
+  bitmaps.column = column;
+  bitmaps.words.assign(words, 0);
+  for (size_t r = 0; r < rows; ++r) {
+    const char* base = cache.scalars.data() + cache.offsets[r];
+    size_t pos = 0;
+    const char* target = nullptr;
+    uint32_t target_len = 0;
+    for (size_t i = 0; i < meta.columns.size(); ++i) {
+      if (static_cast<int>(i) == cache.vector_column) continue;
+      const Column& col = meta.columns[i];
+      if (col.type == ColumnType::BigInt) {
+        if (static_cast<int>(i) == column) target = base + pos;
+        pos += sizeof(int64_t);
+      } else {
+        uint32_t len = 0;
+        std::memcpy(&len, base + pos, sizeof(len));
+        if (static_cast<int>(i) == column) {
+          target = base + pos + sizeof(uint32_t);
+          target_len = len;
+        }
+        pos += sizeof(uint32_t) + len;
+      }
+    }
+    if (target == nullptr) continue;
+    auto& bits = bitmaps.words;
+    const size_t word = r / 64;
+    const uint64_t mask = 1ULL << (r % 64);
+    if (is_int) {
+      int64_t value = 0;
+      std::memcpy(&value, target, sizeof(value));
+      auto it = bitmaps.int_values.find(value);
+      if (it == bitmaps.int_values.end()) {
+        it = bitmaps.int_values.emplace(value, std::vector<uint64_t>(words, 0)).first;
+      }
+      it->second[word] |= mask;
+    } else {
+      auto it = bitmaps.str_values.find(std::string(target, target_len));
+      if (it == bitmaps.str_values.end()) {
+        it = bitmaps.str_values
+                 .emplace(std::string(target, target_len), std::vector<uint64_t>(words, 0))
+                 .first;
+      }
+      it->second[word] |= mask;
+    }
+    bits[word] |= 0;  // keep `words` referenced for clarity
+  }
+  bitmaps.valid = true;
+}
+
 bool Engine::cached_row_matches(const TableMeta& meta,
                                 const std::vector<PreparedCondition>& prepared,
                                 int vector_column, const char* scalars) const {
@@ -987,7 +1048,42 @@ ResultSet Engine::exec_select(const Statement& stmt) {
     // Column cache: vectors are contiguous, so the scan streams at memory
     // bandwidth instead of walking slotted pages and recomputing offsets.
     ensure_scan_cache(table, vec_column);
-    if (table.cache.valid && static_cast<size_t>(table.cache.dim) == dim) {
+    const bool cache_ok = table.cache.valid && static_cast<size_t>(table.cache.dim) == dim;
+
+    // A single equality filter can be answered from a precomputed bitmap: only
+    // the matching rows are touched, so a selective filter costs a fraction of
+    // a full scan. Anything else falls back to the row-by-row path.
+    bool bitmap_done = false;
+    if (cache_ok && prepared.size() == 1 && prepared[0].op == Condition::Op::Eq) {
+      const PreparedCondition& cond = prepared[0];
+      ensure_bitmap_index(table, static_cast<int>(cond.column));
+      if (table.bitmaps.valid && table.bitmaps.column == static_cast<int>(cond.column)) {
+        const std::vector<uint64_t>* bits = nullptr;
+        if (cond.value.kind == Value::Kind::Int) {
+          auto it = table.bitmaps.int_values.find(cond.value.i);
+          if (it != table.bitmaps.int_values.end()) bits = &it->second;
+        } else {
+          auto it = table.bitmaps.str_values.find(cond.value.s);
+          if (it != table.bitmaps.str_values.end()) bits = &it->second;
+        }
+        if (bits != nullptr) {
+          const ScanCache& cache = table.cache;
+          for (size_t w = 0; w < bits->size(); ++w) {
+            uint64_t word = (*bits)[w];
+            while (word != 0) {
+              const unsigned bit = static_cast<unsigned>(__builtin_ctzll(word));
+              word &= word - 1;
+              const size_t r = w * 64 + bit;
+              ++timings_.rows_scanned;
+              consider(l2_exact(cache.vectors.data() + r * dim, query.data(), dim), cache.ids[r]);
+            }
+          }
+        }
+        bitmap_done = true;  // a missing bitmap means "no row matches"
+      }
+    }
+
+    if (cache_ok && !bitmap_done) {
       const ScanCache& cache = table.cache;
       const size_t rows = cache.ids.size();
       timings_.rows_scanned += rows;
@@ -1000,7 +1096,7 @@ ResultSet Engine::exec_select(const Statement& stmt) {
         const float* vec = cache.vectors.data() + r * dim;
         consider(l2_exact(vec, query.data(), dim), cache.ids[r]);
       }
-    } else {
+    } else if (!cache_ok) {
       table.heap->scan([&](RID rid, std::string_view bytes) {
         ++timings_.rows_scanned;
         RawRow raw;
