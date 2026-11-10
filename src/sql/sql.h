@@ -72,6 +72,8 @@ struct Condition {
 };
 
 struct SelectItem {
+  // Hidden items are computed for ORDER BY but not projected.
+  bool hidden = false;
   // A literal item is only meaningful in SELECT without FROM (e.g. SELECT 1).
   bool is_literal = false;
   Value literal;

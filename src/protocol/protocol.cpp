@@ -103,6 +103,8 @@ const char* error_name(int code) {
     case kErrDuplicateColumn: return "duplicate_column";
     case kErrNoPrimaryKey: return "missing_primary_key";
     case kErrMultiplePrimaryKey: return "multiple_primary_keys";
+    case kErrIncorrectValue: return "invalid_value";
+    case kErrOutOfRange: return "out_of_range";
     case kErrSyntax: return "syntax_error";
     default: return "internal_error";
   }

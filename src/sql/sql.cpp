@@ -658,7 +658,28 @@ class Parser {
       expect_kw("by");
       while (true) {
         OrderKey key;
-        key.name = expect_ident("an ORDER BY column");
+        if (is_kw(peek(), "l2_distance") && peek(1).kind == TokenKind::LParen) {
+          // ORDER BY L2_DISTANCE(col, vec): compute it as a hidden item so the
+          // projection stays unchanged.
+          SelectItem item;
+          item.is_distance = true;
+          item.hidden = true;
+          advance();
+          advance();
+          item.column = expect_ident("a vector column");
+          expect(TokenKind::Comma, "','");
+          Value query = parse_literal();
+          if (query.kind != Value::Kind::Vec) {
+            throw_sql_error(kErrIncorrectValue, "L2_DISTANCE query must be a vector literal");
+          }
+          item.query = std::move(query.v);
+          expect(TokenKind::RParen, "')'");
+          item.alias = "__order_distance_" + std::to_string(stmt.select_items.size());
+          key.name = item.alias;
+          stmt.select_items.push_back(std::move(item));
+        } else {
+          key.name = expect_ident("an ORDER BY column");
+        }
         if (accept_kw("asc")) {
           key.asc = true;
         } else if (accept_kw("desc")) {
@@ -719,6 +740,15 @@ class Parser {
     while (true) {
       if (is_kw(peek(), "or")) {
         throw_sql_error(kErrNotSupported, "OR is not supported");
+      }
+      if (accept(TokenKind::LParen)) {
+        // Parenthesised groups only change precedence, which a flat AND chain
+        // does not need; flatten them into the same list.
+        std::vector<Condition> inner = parse_where();
+        expect(TokenKind::RParen, "')'");
+        conditions.insert(conditions.end(), inner.begin(), inner.end());
+        if (accept_kw("and")) continue;
+        break;
       }
       Condition cond;
       cond.column = expect_ident("a column name");

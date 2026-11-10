@@ -855,6 +855,7 @@ ResultSet Engine::exec_select(const Statement& stmt) {
   struct OutputSpec {
     size_t table_index = 0;
     bool is_distance = false;
+    bool hidden = false;
     std::vector<float> query;
     std::string name;
   };
@@ -871,6 +872,7 @@ ResultSet Engine::exec_select(const Statement& stmt) {
       OutputSpec spec;
       spec.table_index = require_column(meta, item.column);
       spec.is_distance = item.is_distance;
+      spec.hidden = item.hidden;
       spec.query = item.query;
       spec.name = item.alias;
       if (spec.name.empty()) {
@@ -1194,6 +1196,7 @@ ResultSet Engine::exec_select(const Statement& stmt) {
   ResultSet rs;
   rs.has_rows = true;
   for (const OutputSpec& spec : specs) {
+    if (spec.hidden) continue;
     rs.columns.push_back(spec.name);
     if (spec.is_distance) {
       rs.column_kinds.push_back(CellKind::Float);
@@ -1207,6 +1210,7 @@ ResultSet Engine::exec_select(const Statement& stmt) {
     std::vector<std::string> line;
     line.reserve(specs.size());
     for (size_t i = 0; i < specs.size(); ++i) {
+      if (specs[i].hidden) continue;
       line.push_back(format_value(out.raw[i], meta.columns[specs[i].table_index].type));
     }
     rs.rows.push_back(std::move(line));

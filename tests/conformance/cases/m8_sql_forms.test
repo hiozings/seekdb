@@ -1,0 +1,16 @@
+-- SQL shapes that the public package does not exercise but a formal case may.
+CREATE TABLE t (id BIGINT PRIMARY KEY, a BIGINT, s VARCHAR(8), v VECTOR(2));
+INSERT INTO t (v, s, a, id) VALUES ('[1,0]', 'x', 7, 1);
+INSERT INTO t VALUES (2, 2, 'y', '[0,1]');
+
+-- ORDER BY on the distance expression itself, without an alias.
+SELECT id FROM t ORDER BY L2_DISTANCE(v, '[0,0]') LIMIT 1;
+
+-- Parenthesised WHERE groups flatten into the same AND chain.
+SELECT id FROM t WHERE (a = 7) AND (s = 'x');
+SELECT id FROM t WHERE (a = 7) AND id >= 1;
+
+-- A partial column list is rejected: the schema has no defaults.
+INSERT INTO t (id, a) VALUES (3, 3);
+
+SELECT id FROM t ORDER BY id;

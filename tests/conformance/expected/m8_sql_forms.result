@@ -1,0 +1,8 @@
+{}
+{"affected_rows":1}
+{"affected_rows":1}
+{"columns":["id"],"rows":[[1]]}
+{"columns":["id"],"rows":[[1]]}
+{"columns":["id"],"rows":[[1]]}
+{"error":"invalid_value"}
+{"columns":["id"],"rows":[[1],[2]]}
