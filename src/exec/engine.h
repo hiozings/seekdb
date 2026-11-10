@@ -23,7 +23,7 @@ struct PreparedCondition;
 
 // How a result cell must be rendered: JSON needs to know whether a value is a
 // number or a string without guessing from its text.
-enum class CellKind { Int, Str, Float };
+enum class CellKind { Int, Str, Float, Vector };
 
 struct ResultSet {
   bool has_rows = false;
@@ -60,6 +60,8 @@ class Engine {
     uint64_t ann_queries = 0;
     uint64_t ann_ef_total = 0;
     uint64_t wal_bytes = 0;
+    uint64_t cache_scans = 0;
+    uint64_t page_scans = 0;
     double insert_encode_ms = 0.0;
     double insert_heap_ms = 0.0;
     double insert_index_ms = 0.0;

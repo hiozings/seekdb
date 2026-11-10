@@ -112,8 +112,8 @@ const char* error_name(int code) {
 
 FormatSpec load_format_spec_from_env() {
   FormatSpec spec;
-  const std::string format = to_lower(env_string("MVDB_FORMAT", "json"));
-  spec.format = format == "text" ? OutputFormat::Text : OutputFormat::Json;
+  const std::string format = to_lower(env_string("MVDB_FORMAT", "protocol"));
+  spec.format = format == "text" ? OutputFormat::Text : OutputFormat::Protocol;
   spec.print_header = env_bool("MVDB_PRINT_HEADER", spec.print_header);
   spec.header_when_empty = env_bool("MVDB_HEADER_WHEN_EMPTY", spec.header_when_empty);
   spec.column_separator = unescape_separator(env_string("MVDB_SEP", spec.column_separator));
@@ -227,13 +227,64 @@ void OutputWriter::emit_line(const std::string& line) {
 }
 
 void OutputWriter::write_ready() {
+  if (spec_.format == OutputFormat::Protocol) {
+    emit_line("{\"type\":\"ready\"}");
+    flush();
+    return;
+  }
   if (spec_.ready_marker.empty()) return;
   emit_line(spec_.ready_marker);
   flush();
 }
 
+void OutputWriter::append_rows_json(std::string& out, const ResultSet& rs) const {
+  out += ",\"columns\":[";
+  for (size_t i = 0; i < rs.columns.size(); ++i) {
+    if (i != 0) out += ",";
+    out += "\"" + json_escape(rs.columns[i]) + "\"";
+  }
+  out += "],\"rows\":[";
+  for (size_t r = 0; r < rs.rows.size(); ++r) {
+    if (r != 0) out += ",";
+    out += "[";
+    for (size_t c = 0; c < rs.rows[r].size(); ++c) {
+      if (c != 0) out += ",";
+      const bool quoted = c >= rs.column_kinds.size() || rs.column_kinds[c] == CellKind::Str;
+      if (quoted) {
+        out += "\"" + json_escape(rs.rows[r][c]) + "\"";
+      } else {
+        out += rs.rows[r][c];
+      }
+    }
+    out += "]";
+  }
+  out += "]";
+}
+
+void OutputWriter::write_response(const std::string& id_text, const ResultSet& rs) {
+  std::string out = "{\"id\":" + id_text + ",\"ok\":true";
+  if (rs.has_rows) {
+    append_rows_json(out, rs);
+  } else if (rs.has_affected_rows) {
+    out += ",\"affected_rows\":" + std::to_string(rs.affected_rows);
+  }
+  out += "}";
+  emit_line(out);
+}
+
+void OutputWriter::write_error_response(const std::string& id_text, const SqlError& err) {
+  std::string out = "{\"id\":" + id_text + ",\"ok\":false,\"error\":{\"code\":\"";
+  out += error_name(err.code);
+  out += "\",\"message\":\"" + json_escape(err.message) + "\"}}";
+  emit_line(out);
+}
+
+void OutputWriter::write_ok_response(const std::string& id_text) {
+  emit_line("{\"id\":" + id_text + ",\"ok\":true}");
+}
+
 void OutputWriter::write_result(const ResultSet& rs) {
-  if (spec_.format == OutputFormat::Json) {
+  if (spec_.format != OutputFormat::Text) {
     write_result_json(rs);
     return;
   }
@@ -305,7 +356,7 @@ void OutputWriter::write_result_text(const ResultSet& rs) {
 }
 
 void OutputWriter::write_error(const SqlError& err) {
-  if (spec_.format == OutputFormat::Json) {
+  if (spec_.format != OutputFormat::Text) {
     emit_line(std::string("{\"error\":\"") + error_name(err.code) + "\"}");
     return;
   }

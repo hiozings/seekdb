@@ -1,4 +1,4 @@
 {}
-{"affected_rows":1900}
-{"columns":["id"],"rows":[[1900],[1899]]}
-{"columns":["id","d"],"rows":[[1,0]]}
+{"affected_rows": 1900}
+{"columns": ["id"], "rows": [[1900], [1899]]}
+{"columns": ["id", "d"], "rows": [[1, 0]]}

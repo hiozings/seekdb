@@ -13,76 +13,17 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from protocol_client import Session, to_assertion  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_BIN = ROOT / "build" / "minivectordb"
 OFFICIAL = ROOT / "tests" / "official"
 FLOAT_TOLERANCE = 1e-5
-
-
-class Session:
-    def __init__(self, binary: Path, data_dir: Path):
-        self.binary = binary
-        self.data_dir = data_dir
-        self.proc: subprocess.Popen | None = None
-        self.start()
-
-    def start(self):
-        self.proc = subprocess.Popen(
-            [str(self.binary), "--data-dir", str(self.data_dir)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
-
-    def send_sql(self, sql: str) -> dict:
-        assert self.proc is not None and self.proc.stdin and self.proc.stdout
-        self.proc.stdin.write(sql.rstrip() + "\n")
-        self.proc.stdin.flush()
-        line = self.proc.stdout.readline()
-        if line == "":
-            raise RuntimeError(f"process exited while running {sql!r}")
-        try:
-            return json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"non-JSON response to {sql!r}: {line!r} ({exc})") from exc
-
-    def send_directive(self, directive: str) -> None:
-        assert self.proc is not None and self.proc.stdin
-        self.proc.stdin.write(directive + "\n")
-        self.proc.stdin.flush()
-
-    def restart(self):
-        assert self.proc is not None and self.proc.stdin
-        self.proc.stdin.close()
-        try:
-            self.proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
-            self.proc.wait()
-        if self.proc.returncode != 0:
-            raise RuntimeError(f"process exited with {self.proc.returncode} on --restart")
-        self.start()
-
-    def close(self):
-        if self.proc is None:
-            return
-        if self.proc.poll() is None:
-            try:
-                self.proc.stdin.close()
-            except Exception:
-                pass
-            try:
-                self.proc.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait()
 
 
 def close_enough(expected, actual) -> bool:
@@ -152,6 +93,7 @@ def run_case(binary: Path, case_id: str, verbose: bool) -> list[str]:
     failures: list[str] = []
     session = Session(binary, data_dir)
     index = 0
+    mode = "exact"
     try:
         for line_number, line in enumerate(lines, start=1):
             if not line:
@@ -161,12 +103,12 @@ def run_case(binary: Path, case_id: str, verbose: bool) -> list[str]:
                 if directive == "--restart":
                     session.restart()
                 elif directive.startswith("--mode"):
-                    session.send_directive(line)
+                    mode = directive.split()[-1]
                 continue
             if index >= len(expected):
                 failures.append(f"line {line_number}: more statements than expected results")
                 break
-            actual = session.send_sql(line)
+            actual = to_assertion(session.execute(line, mode))
             problem = compare(expected[index], actual)
             if problem:
                 failures.append(f"statement {index + 1} (line {line_number}): {problem}\n"

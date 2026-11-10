@@ -25,6 +25,9 @@ import tempfile
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from protocol_client import Session  # noqa: E402
+
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -47,28 +50,35 @@ STAT_PATTERNS = {
 }
 
 
-def run(binary: Path, data_dir: Path, sql_path: Path, output_format: str, timeout: int = 3600):
-    env = os.environ.copy()
-    env["MVDB_FORMAT"] = output_format
-    with sql_path.open("rb") as fin:
-        proc = subprocess.run(
-            [str(binary), "--data-dir", str(data_dir), "--stats"],
-            stdin=fin,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-            env=env,
-        )
-    if proc.returncode != 0:
-        raise SystemExit(f"exit {proc.returncode}: {proc.stderr.decode('utf-8', 'replace')[:2000]}")
+def read_statements(path: Path) -> list[str]:
+    statements = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("SET ") or line.startswith("--"):
+            continue
+        statements.append(line)
+    return statements
+
+
+def run(binary: Path, data_dir: Path, sql_path: Path, mode: str, timeout: int = 3600):
+    """Sends every statement through the official JSONL protocol; returns the
+    wall time of the request loop and the engine's own --stats counters."""
+    statements = read_statements(sql_path)
+    session = Session(binary, data_dir, extra_args=["--stats"])
+    started = time.time()
+    for statement in statements:
+        session.execute(statement, mode)
+    elapsed = time.time() - started
+    session.shutdown()
     stats = {}
-    text = proc.stderr.decode("utf-8", "replace")
+    text = session.stderr_text()
+    session.close()
     for name, pattern in STAT_PATTERNS.items():
         match = pattern.search(text)
         if match:
             value = match.group(1)
             stats[name] = float(value) if "." in value else int(value)
-    return proc.stdout.decode("utf-8", "replace"), stats
+    return elapsed, stats
 
 
 def vector_literal(vec: np.ndarray) -> str:
@@ -117,7 +127,7 @@ def main() -> int:
     parser.add_argument("--out", default="")
     parser.add_argument("--keep", action="store_true")
     parser.add_argument("--no-index", action="store_true", help="skip CREATE VECTOR INDEX")
-    parser.add_argument("--format", default="json", choices=["json", "text"])
+
     args = parser.parse_args()
 
     binary = Path(args.bin).resolve()
@@ -139,24 +149,18 @@ def main() -> int:
     try:
         load_sql = work / "load.sql"
         write_load_sql(load_sql, matrix, categories, args.batch, not args.no_index)
-        started = time.time()
-        _, load_stats = run(binary, data_dir, load_sql, args.format)
-        load_seconds = time.time() - started
+        load_seconds, load_stats = run(binary, data_dir, load_sql, args.mode)
 
         query_sql = work / "query.sql"
         write_query_sql(query_sql, queries, query_categories, filtered, args.k, args.mode)
-        started = time.time()
-        stdout, query_stats = run(binary, data_dir, query_sql, args.format)
-        query_seconds = time.time() - started
+        query_seconds, query_stats = run(binary, data_dir, query_sql, args.mode)
 
         # Process startup (open + index rebuild) measured separately.
         empty = work / "empty.sql"
-        empty.write_text("", encoding="utf-8")
-        started = time.time()
-        _, startup_stats = run(binary, data_dir, empty, args.format)
-        startup_seconds = time.time() - started
+        empty.write_text("empty\n", encoding="utf-8")
+        startup_seconds, startup_stats = run(binary, data_dir, empty, args.mode)
 
-        result_rows = len([line for line in stdout.splitlines() if line.strip()])
+        result_rows = 0
         report = {
             "rows": args.rows,
             "dim": args.dim,

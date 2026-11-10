@@ -8,6 +8,7 @@
 #include <string>
 
 #include "exec/engine.h"
+#include "protocol/json.h"
 #include "protocol/protocol.h"
 #include "sql/sql.h"
 #include "util/util.h"
@@ -43,6 +44,24 @@ void report_process_stats() {
     if (line.rfind("write_bytes:", 0) == 0) write_bytes = std::strtoull(line.c_str() + 12, nullptr, 10);
   }
   std::fprintf(stderr, "[stats] read_bytes=%llu write_bytes=%llu\n", read_bytes, write_bytes);
+}
+
+void print_timings(const mvdb::Engine& engine) {
+  const mvdb::Engine::Timings& t = engine.timings();
+  std::fprintf(stderr,
+               "[stats] queries=%llu ann_queries=%llu rows_scanned=%llu avg_ef=%.1f\n"
+               "[stats] select_scan_ms=%.1f select_ann_ms=%.1f commit_ms=%.1f index_build_ms=%.1f\n",
+               static_cast<unsigned long long>(t.queries),
+               static_cast<unsigned long long>(t.ann_queries),
+               static_cast<unsigned long long>(t.rows_scanned),
+               t.ann_queries ? static_cast<double>(t.ann_ef_total) / static_cast<double>(t.ann_queries)
+                             : 0.0,
+               t.select_scan_ms, t.select_ann_ms, t.commit_ms, t.index_build_ms);
+  std::fprintf(stderr, "[stats] insert_encode_ms=%.1f insert_heap_ms=%.1f insert_index_ms=%.1f\n",
+               t.insert_encode_ms, t.insert_heap_ms, t.insert_index_ms);
+  std::fprintf(stderr, "[stats] parse_ms=%.1f cache_scans=%llu page_scans=%llu\n", t.parse_ms,
+               static_cast<unsigned long long>(t.cache_scans),
+               static_cast<unsigned long long>(t.page_scans));
 }
 
 void print_help() {
@@ -130,6 +149,74 @@ bool handle_statement(std::string_view raw, mvdb::Engine& engine, mvdb::OutputWr
   return true;
 }
 
+// JSONL request/response loop used by the judge.
+int run_protocol_loop(mvdb::Engine& engine, mvdb::OutputWriter& writer) {
+  std::string line;
+  while (std::getline(std::cin, line)) {
+    if (mvdb::trim_view(line).empty()) continue;
+    mvdb::JsonValue request;
+    std::string error;
+    if (!mvdb::parse_json(line, request, error)) {
+      writer.write_error_response("null", mvdb::SqlError{mvdb::kErrSyntax, error});
+      writer.flush();
+      continue;
+    }
+    const mvdb::JsonValue* id = request.find("id");
+    const std::string id_text =
+        (id != nullptr && id->type == mvdb::JsonValue::Type::Number) ? id->text : std::string("null");
+    const mvdb::JsonValue* op = request.find("op");
+    const std::string op_name = (op != nullptr && op->is_string()) ? mvdb::to_lower(op->text) : "";
+
+    if (op_name == "shutdown") {
+      engine.shutdown();
+      writer.write_ok_response(id_text);
+      writer.flush();
+      return 0;
+    }
+    if (op_name != "execute") {
+      writer.write_error_response(id_text, mvdb::SqlError{mvdb::kErrNotSupported, "unsupported op"});
+      writer.flush();
+      continue;
+    }
+    const mvdb::JsonValue* sql = request.find("sql");
+    if (sql == nullptr || !sql->is_string()) {
+      writer.write_error_response(id_text, mvdb::SqlError{mvdb::kErrSyntax, "missing sql"});
+      writer.flush();
+      continue;
+    }
+    const mvdb::JsonValue* mode = request.find("search_mode");
+    if (mode != nullptr && mode->is_string()) {
+      const std::string value = mvdb::to_lower(mode->text);
+      if (value == "ann") {
+        engine.set_mode(mvdb::Engine::QueryMode::Ann);
+      } else if (value == "exact") {
+        engine.set_mode(mvdb::Engine::QueryMode::Exact);
+      }
+    }
+    std::string text = mvdb::trim(sql->text);
+    while (!text.empty() && (text.back() == ';' || text.back() == ' ')) {
+      text.pop_back();
+    }
+    if (text.empty()) {
+      writer.write_ok_response(id_text);
+      writer.flush();
+      continue;
+    }
+    try {
+      mvdb::Statement stmt = mvdb::parse_statement(text);
+      mvdb::ResultSet rs = engine.execute(stmt);
+      writer.write_response(id_text, rs);
+    } catch (const mvdb::SqlError& err) {
+      writer.write_error_response(id_text, err);
+    } catch (const std::exception& ex) {
+      writer.write_error_response(id_text, mvdb::SqlError{mvdb::kErrInternal, ex.what()});
+    }
+    writer.flush();
+  }
+  engine.shutdown();
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -164,7 +251,7 @@ int main(int argc, char** argv) {
   std::signal(SIGPIPE, SIG_IGN);
 
   mvdb::FormatSpec spec = mvdb::load_format_spec_from_env();
-  if (spec.format == mvdb::OutputFormat::Json) spec.float_format = "%.17g";
+  if (spec.format != mvdb::OutputFormat::Text) spec.float_format = "%.17g";
   size_t pool_pages = 2048;
   if (const char* value = std::getenv("MVDB_POOL_PAGES")) {
     pool_pages = std::strtoul(value, nullptr, 10);
@@ -196,6 +283,14 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "[probe] data-dir=%s\n", opts.data_dir.c_str());
   }
   writer.write_ready();
+  if (spec.format == mvdb::OutputFormat::Protocol) {
+    const int code = run_protocol_loop(engine, writer);
+    if (opts.stats) {
+      report_process_stats();
+      print_timings(engine);
+    }
+    return code;
+  }
 
   mvdb::StatementSplitter splitter;
   std::string line;
@@ -266,18 +361,7 @@ int main(int argc, char** argv) {
   engine.shutdown();
   if (opts.stats) {
     report_process_stats();
-    const mvdb::Engine::Timings& t = engine.timings();
-    std::fprintf(stderr,
-                 "[stats] queries=%llu ann_queries=%llu rows_scanned=%llu avg_ef=%.1f\n"
-                 "[stats] select_scan_ms=%.1f select_ann_ms=%.1f commit_ms=%.1f index_build_ms=%.1f\n",
-                 static_cast<unsigned long long>(t.queries),
-                 static_cast<unsigned long long>(t.ann_queries),
-                 static_cast<unsigned long long>(t.rows_scanned),
-                 t.ann_queries ? static_cast<double>(t.ann_ef_total) / static_cast<double>(t.ann_queries) : 0.0,
-                 t.select_scan_ms, t.select_ann_ms, t.commit_ms, t.index_build_ms);
-    std::fprintf(stderr, "[stats] insert_encode_ms=%.1f insert_heap_ms=%.1f insert_index_ms=%.1f\n",
-                 t.insert_encode_ms, t.insert_heap_ms, t.insert_index_ms);
-    std::fprintf(stderr, "[stats] parse_ms=%.1f\n", t.parse_ms);
+    print_timings(engine);
   }
   return 0;
 }

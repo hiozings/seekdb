@@ -10,16 +10,16 @@
 
 namespace mvdb {
 
-// Wire format. The official package compares one JSON object per statement
-// against a JSON array; text mode is kept for local debugging.
-enum class OutputFormat { Json, Text };
+// Wire format. Protocol mode implements the official JSONL request/response
+// envelope; text mode is kept for local SQL-level tests.
+enum class OutputFormat { Protocol, Text };
 
 // All wire-format knobs live here so that the exact output contract can be
 // re-pointed without touching the engine.
 struct FormatSpec {
   enum class DmlOutput { None, AffectedRows, Ok };
 
-  OutputFormat format = OutputFormat::Json;
+  OutputFormat format = OutputFormat::Protocol;
   bool print_header = true;
   bool header_when_empty = true;
   std::string column_separator = "\t";
@@ -68,8 +68,14 @@ class OutputWriter {
   void write_error(const SqlError& err);
   void flush();
 
+  // Protocol mode: one response object per request, echoing the raw id token.
+  void write_response(const std::string& id_text, const ResultSet& rs);
+  void write_error_response(const std::string& id_text, const SqlError& err);
+  void write_ok_response(const std::string& id_text);
+
  private:
   void emit_line(const std::string& line);
+  void append_rows_json(std::string& out, const ResultSet& rs) const;
   void write_result_json(const ResultSet& rs);
   void write_result_text(const ResultSet& rs);
 

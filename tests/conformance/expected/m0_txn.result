@@ -1,18 +1,18 @@
 {}
-{"affected_rows":1}
+{"affected_rows": 1}
 {}
-{"affected_rows":1}
-{"affected_rows":1}
-{"columns":["id","v"],"rows":[[1,"z"],[2,"b"]]}
+{"affected_rows": 1}
+{"affected_rows": 1}
+{"columns": ["id", "v"], "rows": [[1, "z"], [2, "b"]]}
 {}
-{"columns":["id","v"],"rows":[[1,"a"]]}
+{"columns": ["id", "v"], "rows": [[1, "a"]]}
 {}
-{"affected_rows":1}
+{"affected_rows": 1}
 {}
-{"columns":["id"],"rows":[[1],[3]]}
+{"columns": ["id"], "rows": [[1], [3]]}
 {}
-{"affected_rows":1}
-{"error":"duplicate_key"}
-{"columns":["id","v"],"rows":[[1,"a"],[3,"c"],[4,"d"]]}
+{"affected_rows": 1}
+{"error": "duplicate_key"}
+{"columns": ["id", "v"], "rows": [[1, "a"], [3, "c"], [4, "d"]]}
 {}
-{"columns":["id"],"rows":[[1],[3]]}
+{"columns": ["id"], "rows": [[1], [3]]}

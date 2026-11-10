@@ -1090,6 +1090,7 @@ ResultSet Engine::exec_select(const Statement& stmt) {
     }
 
     if (cache_ok && !bitmap_done) {
+      ++timings_.cache_scans;
       const ScanCache& cache = table.cache;
       const size_t rows = cache.ids.size();
       timings_.rows_scanned += rows;
@@ -1103,6 +1104,7 @@ ResultSet Engine::exec_select(const Statement& stmt) {
         consider(l2_exact(vec, query.data(), dim), cache.ids[r]);
       }
     } else if (!cache_ok) {
+      ++timings_.page_scans;
       table.heap->scan([&](RID rid, std::string_view bytes) {
         ++timings_.rows_scanned;
         RawRow raw;
@@ -1202,7 +1204,13 @@ ResultSet Engine::exec_select(const Statement& stmt) {
       rs.column_kinds.push_back(CellKind::Float);
     } else {
       const ColumnType type = meta.columns[spec.table_index].type;
-      rs.column_kinds.push_back(type == ColumnType::BigInt ? CellKind::Int : CellKind::Str);
+      if (type == ColumnType::BigInt) {
+        rs.column_kinds.push_back(CellKind::Int);
+      } else if (type == ColumnType::Vector) {
+        rs.column_kinds.push_back(CellKind::Vector);
+      } else {
+        rs.column_kinds.push_back(CellKind::Str);
+      }
     }
   }
   rs.rows.reserve(out_rows.size());

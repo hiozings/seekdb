@@ -1,16 +1,16 @@
 {}
-{"affected_rows":1}
-{"error":"duplicate_key"}
-{"error":"varchar_too_long"}
-{"error":"varchar_too_long"}
-{"error":"dimension_mismatch"}
-{"error":"float32_overflow"}
-{"error":"duplicate_key"}
-{"columns":["id","v","e"],"rows":[[1,"abc","[1,2]"]]}
-{"error":"unknown_column"}
-{"error":"unknown_table"}
-{"error":"unsupported_sql"}
-{"error":"unsupported_sql"}
-{"error":"syntax_error"}
-{"affected_rows":1}
-{"columns":["id","v","e"],"rows":[[1,"abc","[1,2]"],[7,"事务与恢","[1,2]"]]}
+{"affected_rows": 1}
+{"error": "duplicate_key"}
+{"error": "varchar_too_long"}
+{"error": "varchar_too_long"}
+{"error": "dimension_mismatch"}
+{"error": "float32_overflow"}
+{"error": "duplicate_key"}
+{"columns": ["id", "v", "e"], "rows": [[1, "abc", [1, 2]]]}
+{"error": "unknown_column"}
+{"error": "unknown_table"}
+{"error": "unsupported_sql"}
+{"error": "unsupported_sql"}
+{"error": "syntax_error"}
+{"affected_rows": 1}
+{"columns": ["id", "v", "e"], "rows": [[1, "abc", [1, 2]], [7, "事务与恢", [1, 2]]]}

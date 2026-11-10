@@ -19,31 +19,23 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from protocol_client import Session, to_assertion  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_BIN = ROOT / "build" / "minivectordb"
 
 
-def run(binary: Path, data_dir: Path, sql: str) -> list:
-    proc = subprocess.run(
-        [str(binary), "--data-dir", str(data_dir)],
-        input=sql.encode(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=600,
-    )
-    if proc.returncode != 0:
-        raise SystemExit(f"exit {proc.returncode}: {proc.stderr.decode('utf-8', 'replace')[:400]}")
-    out = []
-    for line in proc.stdout.decode("utf-8", "replace").splitlines():
-        if not line.strip():
-            continue
-        out.append(json.loads(line))
-    return out
+def run(binary: Path, data_dir: Path, statements: list[str]) -> list:
+    session = Session(binary, data_dir)
+    try:
+        return [to_assertion(session.execute(statement)) for statement in statements]
+    finally:
+        session.close()
 
 
 def main() -> int:
@@ -63,7 +55,7 @@ def main() -> int:
             print(f"[FAIL] {name} {detail}")
 
     try:
-        sql = "\n".join([
+        statements = [
             "CREATE TABLE v (id BIGINT PRIMARY KEY, e VECTOR(2), s VARCHAR(3));",
             # 1. illegal vectors and over-long strings must be rejected
             "INSERT INTO v VALUES (1,'[1,2]','abc');",
@@ -88,8 +80,8 @@ def main() -> int:
             "SET mode = 'ann';",
             "SELECT id, L2_DISTANCE(e,'[1,0]') AS d FROM a WHERE c = 'x' ORDER BY d LIMIT 2;",
             "SELECT id FROM a WHERE c = 'none' ORDER BY L2_DISTANCE(e,'[1,0]') LIMIT 5;",
-        ]) + "\n"
-        out = run(binary, data_dir, sql)
+        ]
+        out = run(binary, data_dir, statements)
     finally:
         shutil.rmtree(data_dir, ignore_errors=True)
 

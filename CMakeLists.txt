@@ -18,6 +18,7 @@ add_executable(minivectordb
   src/sql/sql.cpp
   src/exec/engine.cpp
   src/protocol/protocol.cpp
+  src/protocol/json.cpp
   src/storage/page.cpp
   src/storage/buffer_pool.cpp
   src/storage/heap_file.cpp

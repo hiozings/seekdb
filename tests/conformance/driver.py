@@ -22,12 +22,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from protocol_client import Session, to_assertion  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 CONF = ROOT / "tests" / "conformance"
@@ -44,30 +47,48 @@ def normalize(text: str) -> str:
     return "\n".join(line.rstrip(" \t\r") for line in lines)
 
 
-def run_process(binary: Path, data_dir: Path, payload: bytes, env: dict[str, str]) -> str:
-    proc = subprocess.run(
-        [str(binary), "--data-dir", str(data_dir)],
-        input=payload,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-        timeout=300,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"exit code {proc.returncode}\n{proc.stderr.decode('utf-8', 'replace')}"
-        )
-    return proc.stdout.decode("utf-8", "replace")
+def split_statements(text: str) -> list[str]:
+    """Splits myqltest-style SQL text into single statements (top-level ';')."""
+    statements: list[str] = []
+    current: list[str] = []
+    in_string = False
+    pending: list[str] = []
 
+    def flush():
+        statement = "".join(current).strip()
+        if statement:
+            statements.append(statement)
+        current.clear()
 
-def split_restart_chunks(text: str) -> list[bytes]:
-    chunks: list[list[str]] = [[]]
     for line in text.splitlines():
-        if line.strip().lower() == RESTART_MARKER:
-            chunks.append([])
+        stripped = line.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        pending.append(line)
+    joined = "\n".join(pending)
+    i = 0
+    while i < len(joined):
+        ch = joined[i]
+        if ch == "'":
+            in_string = not in_string
+            current.append(ch)
+        elif ch == ";" and not in_string:
+            flush()
         else:
-            chunks[-1].append(line)
-    return [("\n".join(chunk) + "\n").encode("utf-8") for chunk in chunks]
+            current.append(ch)
+        i += 1
+    flush()
+    return statements
+
+
+def run_case_protocol(binary: Path, statements: list[str]) -> list[dict]:
+    data_dir = Path(tempfile.mkdtemp(prefix="mvdb-case-"))
+    session = Session(binary, data_dir)
+    try:
+        return [to_assertion(session.execute(statement)) for statement in statements]
+    finally:
+        session.close()
+        shutil.rmtree(data_dir, ignore_errors=True)
 
 
 def first_diff(expected: str, actual: str) -> str:
@@ -83,14 +104,25 @@ def first_diff(expected: str, actual: str) -> str:
 
 def run_case(binary: Path, case: Path, env: dict[str, str], keep: bool) -> str:
     data_dir = Path(tempfile.mkdtemp(prefix="mvdb-case-"))
+    session = Session(binary, data_dir)
+    results: list[dict] = []
     try:
+        chunks = [case.read_text(encoding="utf-8")]
         if case.suffix == ".restart":
-            chunks = split_restart_chunks(case.read_text(encoding="utf-8"))
-            output = "".join(run_process(binary, data_dir, chunk, env) for chunk in chunks)
+            text = chunks[0]
+            parts = text.split(RESTART_MARKER)
+            statements = [split_statements(part) for part in parts]
+            for index, group in enumerate(statements):
+                if index > 0:
+                    session.restart()
+                for statement in group:
+                    results.append(to_assertion(session.execute(statement)))
         else:
-            output = run_process(binary, data_dir, case.read_bytes(), env)
-        return normalize(output)
+            for statement in split_statements(chunks[0]):
+                results.append(to_assertion(session.execute(statement)))
+        return normalize("\n".join(json.dumps(r, ensure_ascii=False) for r in results))
     finally:
+        session.close()
         if not keep:
             shutil.rmtree(data_dir, ignore_errors=True)
 

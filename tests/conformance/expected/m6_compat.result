@@ -1,14 +1,14 @@
-{"columns":["1"],"rows":[["1"]]}
-{"columns":["one","label"],"rows":[["1","x"]]}
+{"columns": ["1"], "rows": [["1"]]}
+{"columns": ["one", "label"], "rows": [["1", "x"]]}
 {}
 {}
 {}
 {}
 {}
 {}
-{"affected_rows":1}
+{"affected_rows": 1}
 {}
-{"error":"unknown_table"}
-{"error":"unknown_table"}
+{"error": "unknown_table"}
+{"error": "unknown_table"}
 {}
-{"error":"unknown_table"}
+{"error": "unknown_table"}

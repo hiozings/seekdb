@@ -1,12 +1,12 @@
 {}
-{"affected_rows":3}
-{"columns":["id","category","value"],"rows":[[3,"b",30],[1,"a",10],[2,"a",20]]}
-{"columns":["id","value"],"rows":[[1,10],[2,20]]}
-{"columns":["id","value"],"rows":[[3,30]]}
-{"columns":["id"],"rows":[[3],[2],[1]]}
-{"columns":["id"],"rows":[[1],[2]]}
-{"affected_rows":1}
-{"columns":["id","value"],"rows":[[2,99]]}
-{"affected_rows":1}
-{"columns":["id","category","value"],"rows":[[1,"a",10],[2,"a",99]]}
-{"columns":["id"],"rows":[[2]]}
+{"affected_rows": 3}
+{"columns": ["id", "category", "value"], "rows": [[3, "b", 30], [1, "a", 10], [2, "a", 20]]}
+{"columns": ["id", "value"], "rows": [[1, 10], [2, 20]]}
+{"columns": ["id", "value"], "rows": [[3, 30]]}
+{"columns": ["id"], "rows": [[3], [2], [1]]}
+{"columns": ["id"], "rows": [[1], [2]]}
+{"affected_rows": 1}
+{"columns": ["id", "value"], "rows": [[2, 99]]}
+{"affected_rows": 1}
+{"columns": ["id", "category", "value"], "rows": [[1, "a", 10], [2, "a", 99]]}
+{"columns": ["id"], "rows": [[2]]}
