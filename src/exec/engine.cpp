@@ -958,6 +958,10 @@ ResultSet Engine::exec_select(const Statement& stmt) {
     ++timings_.ann_queries;
     if (!table.vec_index || table.vec_dirty) build_vector_index(table);
     const size_t k = static_cast<size_t>(stmt.limit);
+    // Coarse ranking: pull more candidates from the graph than we return, then
+    // let the exact re-rank below pick the final k. This trades a wider graph
+    // visit for recall without changing ef.
+    const size_t coarse = std::min<size_t>(std::max<size_t>(k * 4, 32), 512);
     const std::vector<float>& query = specs[static_cast<size_t>(dist_slot)].query;
     const VectorIndex::AcceptFn accept = [&](const std::vector<Value>& row) {
       return prepared.empty() || matches_prepared(prepared, row);
@@ -967,7 +971,7 @@ ResultSet Engine::exec_select(const Statement& stmt) {
     const bool debug_ann = std::getenv("MVDB_DEBUG_ANN") != nullptr;
     while (true) {
       VectorIndex::SearchStats stats;
-      hits = table.vec_index->search(query, k, ef, accept, &stats);
+      hits = table.vec_index->search(query, coarse, ef, accept, &stats);
       if (debug_ann) {
         std::fprintf(stderr, "[ann] ef=%zu hits=%zu visited=%zu accepted=%zu\n", ef, hits.size(),
                      stats.visited, stats.accepted);
