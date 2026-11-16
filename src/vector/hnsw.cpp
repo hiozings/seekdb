@@ -13,7 +13,7 @@ namespace {
 
 constexpr int kMaxLevel = 16;
 
-float l2_distance(const float* a, const float* b, size_t dim) {
+double l2_distance(const float* a, const float* b, size_t dim) {
   return l2_rank(a, b, dim);
 }
 
@@ -47,13 +47,13 @@ int VectorIndex::random_level() {
 
 int VectorIndex::greedy_closest(const float* query, int entry, int level) const {
   int best = entry;
-  float best_dist = l2_distance(query, nodes_[best].vec.data(), static_cast<size_t>(dim_));
+  double best_dist = l2_distance(query, nodes_[best].vec.data(), static_cast<size_t>(dim_));
   bool improved = true;
   while (improved) {
     improved = false;
     if (level >= static_cast<int>(nodes_[best].links.size())) break;
     for (int neighbor : nodes_[best].links[static_cast<size_t>(level)]) {
-      const float dist = l2_distance(query, nodes_[neighbor].vec.data(), static_cast<size_t>(dim_));
+      const double dist = l2_distance(query, nodes_[neighbor].vec.data(), static_cast<size_t>(dim_));
       if (dist < best_dist) {
         best_dist = dist;
         best = neighbor;
@@ -64,7 +64,7 @@ int VectorIndex::greedy_closest(const float* query, int entry, int level) const 
   return best;
 }
 
-std::vector<std::pair<float, int>> VectorIndex::search_layer(const float* query, int entry,
+std::vector<std::pair<double, int>> VectorIndex::search_layer(const float* query, int entry,
                                                              size_t ef, int level) const {
   if (visit_stamp_.size() < nodes_.size()) visit_stamp_.resize(nodes_.size(), 0);
   if (++visit_epoch_ == 0) {
@@ -74,13 +74,13 @@ std::vector<std::pair<float, int>> VectorIndex::search_layer(const float* query,
 
   // Hand-rolled heaps on reserved vectors: the search visits thousands of
   // nodes per query and priority_queue reallocations showed up in profiles.
-  using DistNode = std::pair<float, int>;
+  using DistNode = std::pair<double, int>;
   std::vector<DistNode> frontier;  // min-heap on distance
   std::vector<DistNode> best;      // max-heap on distance
   frontier.reserve(ef + 1);
   best.reserve(ef + 1);
 
-  const float entry_dist =
+  const double entry_dist =
       l2_distance(query, nodes_[entry].vec.data(), static_cast<size_t>(dim_));
   frontier.emplace_back(entry_dist, entry);
   best.emplace_back(entry_dist, entry);
@@ -96,7 +96,7 @@ std::vector<std::pair<float, int>> VectorIndex::search_layer(const float* query,
     for (int neighbor : nodes_[static_cast<size_t>(node)].links[static_cast<size_t>(level)]) {
       if (visit_stamp_[static_cast<size_t>(neighbor)] == visit_epoch_) continue;
       visit_stamp_[static_cast<size_t>(neighbor)] = visit_epoch_;
-      const float ndist =
+      const double ndist =
           l2_distance(query, nodes_[neighbor].vec.data(), static_cast<size_t>(dim_));
       if (best.size() < ef || ndist < best.front().first) {
         frontier.emplace_back(ndist, neighbor);
@@ -116,7 +116,7 @@ std::vector<std::pair<float, int>> VectorIndex::search_layer(const float* query,
 }
 
 std::vector<int> VectorIndex::select_neighbors(
-    const std::vector<std::pair<float, int>>& candidates, size_t limit) const {
+    const std::vector<std::pair<double, int>>& candidates, size_t limit) const {
   // HNSW's diversity heuristic: keep a candidate only when it is closer to the
   // query than to every already-selected neighbour. On uniform random
   // high-dimensional data this matters a lot -- plain nearest-M produces a
@@ -127,7 +127,7 @@ std::vector<int> VectorIndex::select_neighbors(
     if (out.size() >= limit) break;
     bool keep = true;
     for (int chosen : out) {
-      const float dist_to_chosen = l2_distance(nodes_[candidate].vec.data(),
+      const double dist_to_chosen = l2_distance(nodes_[candidate].vec.data(),
                                                nodes_[chosen].vec.data(),
                                                static_cast<size_t>(dim_));
       if (dist_to_chosen < dist_to_query) {
@@ -155,7 +155,7 @@ void VectorIndex::connect(int node, int neighbor, int level) {
 
   // Keep the m_ closest neighbours; ties fall back to node id for determinism.
   const Node& self = nodes_[node];
-  std::vector<std::pair<float, int>> scored;
+  std::vector<std::pair<double, int>> scored;
   scored.reserve(links.size());
   for (int candidate : links) {
     scored.emplace_back(

@@ -85,6 +85,7 @@ struct SelectItem {
 };
 
 struct OrderKey {
+  int select_item_index = -1;
   std::string name;
   bool asc = true;
 };

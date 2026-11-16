@@ -41,6 +41,12 @@ find_package(Threads REQUIRED)
 target_link_libraries(minivectordb PRIVATE Threads::Threads)
 
 if(MVDB_BUILD_TESTS)
+  add_executable(buffer_pool_spill_test
+    tests/storage/buffer_pool_spill_test.cpp
+    src/storage/buffer_pool.cpp
+    src/storage/page.cpp
+  )
+  target_include_directories(buffer_pool_spill_test PRIVATE src)
   add_executable(btree_test
     tests/storage/btree_test.cpp
     src/storage/btree.cpp
@@ -63,4 +69,32 @@ if(MVDB_BUILD_TESTS)
   )
   target_include_directories(hnsw_test PRIVATE src)
   target_link_libraries(hnsw_test PRIVATE Threads::Threads)
+  enable_testing()
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(NAME buffer_pool_spill COMMAND buffer_pool_spill_test)
+  add_test(NAME btree COMMAND btree_test)
+  add_test(NAME hnsw COMMAND hnsw_test)
+  foreach(suite correctness_regressions sql_protocol_edges vector_edges large_rows)
+    add_test(NAME ${suite}
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/conformance/test_${suite}.py
+              --bin $<TARGET_FILE:minivectordb>)
+  endforeach()
+  add_test(NAME conformance
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/conformance/driver.py
+            --bin $<TARGET_FILE:minivectordb>)
+  add_test(NAME public_cases
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/official/run_official.py
+            --bin $<TARGET_FILE:minivectordb>)
+  add_test(NAME requirements
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/official/requirements_check.py
+            $<TARGET_FILE:minivectordb>)
+  add_test(NAME crash_recovery
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/crash/kill_test.py
+            --bin $<TARGET_FILE:minivectordb> --trials 20)
+  add_test(NAME large_dataset
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/storage/large_dataset.py
+            --bin $<TARGET_FILE:minivectordb> --rows 100000 --dim 128)
+  set_tests_properties(correctness_regressions sql_protocol_edges vector_edges large_rows
+    conformance public_cases requirements crash_recovery large_dataset
+    PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" TIMEOUT 600)
 endif()

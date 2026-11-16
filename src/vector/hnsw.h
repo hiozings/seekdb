@@ -20,7 +20,7 @@ class VectorIndex {
 
   struct Hit {
     int64_t pk = 0;
-    float distance = 0.0f;
+    double distance = 0.0;
   };
 
   struct SearchStats {
@@ -55,9 +55,9 @@ class VectorIndex {
 
   int random_level();
   int greedy_closest(const float* query, int entry, int level) const;
-  std::vector<std::pair<float, int>> search_layer(const float* query, int entry, size_t ef,
+  std::vector<std::pair<double, int>> search_layer(const float* query, int entry, size_t ef,
                                                   int level) const;
-  std::vector<int> select_neighbors(const std::vector<std::pair<float, int>>& candidates,
+  std::vector<int> select_neighbors(const std::vector<std::pair<double, int>>& candidates,
                                     size_t limit) const;
   void connect(int node, int neighbor, int level);
 

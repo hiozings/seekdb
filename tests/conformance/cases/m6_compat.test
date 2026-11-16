@@ -1,4 +1,4 @@
--- Statements a MySQL-style driver may send around the actual test steps.
+-- Literal projections preserve types; unsupported session settings must fail explicitly.
 SELECT 1;
 SELECT 1 AS one, 'x' AS label;
 SET NAMES utf8mb4;

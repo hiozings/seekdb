@@ -3,7 +3,6 @@
 轻量单机向量数据库：基础 SQL、向量检索、持久化存储、事务与崩溃恢复。
 
 > 当前状态：里程碑 **M5**（协议层 + SQL 解析 + 持久化页存储 + B+tree 主键索引 + WAL 崩溃恢复 + HNSW 向量索引 + 性能优化）。
-> 向量索引（M4）与 WAL 崩溃恢复（M3）尚未接入；README 会随里程碑更新。
 
 ## 1. 语言与构建
 
@@ -67,11 +66,13 @@ docker run --rm -i -v minivectordb-data:/data --cpus=2 --memory=2g minivectordb:
 ```
 
 - 行按模式紧凑编码：`BIGINT` 8 字节、`VARCHAR` 长度+UTF-8 字节、`VECTOR` `dim×4` 字节。
-- 页缓存在内存中，默认 256 页（2 MiB）；**数据量超过缓存预算时按页换入换出，不依赖全量载入内存**。
+- 页缓存在内存中，每个文件默认 2048 页（16 MiB）；**数据量超过缓存预算时按页换入换出，不依赖全量载入内存**。
 - 未显式 `BEGIN` 的写语句自动提交：提交时把本事务修改过的页以整页镜像写入 WAL，
   追加 COMMIT 记录并 `fdatasync`，之后才返回成功。
-- 事务未提交的页**不允许被换出到数据文件**（页缓存拒绝逐出有属主的页），
-  因此磁盘上只存在已提交的数据，恢复不需要 undo。
+- 事务未提交的页可暂存到 `/data` 内独立临时文件，**不会进入正式数据文件**；WAL 同步后才发布。
+  撤销日志及 UPDATE/DELETE 的中间记录也采用临时文件，退出后自动清理。
+- 表定义与索引定义随 WAL 原子提交；回滚后的物理位置变化也写入 WAL。
+- 超过单页容量的合法记录使用溢出页链，支持长 VARCHAR 和高维向量。
 - 重启时重放已提交事务的页镜像；页头 LSN 保证重放幂等，恢复过程中被再次终止也能收敛。
 - 崩溃模型限定为进程被强制终止（赛题定义），不模拟断电，因此页写入未做校验和。
 - 进程正常退出或收到 `quit` 时，**未提交事务先回滚**再落盘。
@@ -92,7 +93,7 @@ docker run --rm -i -v minivectordb-data:/data --cpus=2 --memory=2g minivectordb:
 | 向量索引 | `CREATE VECTOR INDEX 名称 ON 表 (向量列)` |
 | 检索模式 | `SET mode = 'exact'` / `SET mode = 'ann'`，也支持 `/* mode=ann */` 语句注释 |
 | 表管理 | `DROP TABLE [IF EXISTS]`、`CREATE TABLE IF NOT EXISTS` |
-| 驱动兼容 | `SELECT <字面量>`、`SET NAMES`/`SET autocommit`/`SET SESSION ...` 等会话语句按无操作接受、`USE <db>` 无操作 |
+| 协议与附加语法 | `SELECT <字面量>` 保留 JSON 数值类型；未实现的会话设置及 `USE` 明确报错 |
 
 明确的语义约束：
 
@@ -221,6 +222,20 @@ python3 tests/crash/kill_test.py --trials 8     # 强制终止后的恢复不变
 python3 tests/perf/calibrate.py --rows 10000 --dim 128 --queries 120   # 向量召回与延迟
 ```
 
+统一运行回归、存储单测、公开用例及恢复测试：
+
+```bash
+cmake -S . -B build -DMVDB_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j4
+ctest --test-dir build --output-on-failure
+```
+
+另有真实容器内存测试（120 MB 数据、96 MiB 内存、禁用 swap；数据目录必须位于磁盘而非 tmpfs）：
+
+```bash
+python3 tests/storage/container_memory_check.py --image minivectordb:latest
+```
+
 ## 8.0 官方公开题包自测
 
 题包自带官方协议检查器 `protocol_check/run.py`（仓库内已附带），它按正式顺序等待 ready、
@@ -272,12 +287,11 @@ python3 tests/materials/check_conversation.py   # JSON 合法性、128 KiB 上�
 
 ## 10. 已知限制
 
-- 向量索引在首次 ann 查询时惰性重建（10k 行约 1.9 s）；尚未持久化为独立工件。
+- 内存预算内的向量图在启动 ready 前重建；超预算时使用精确扫描。图尚未持久化为独立工件。
 - 精确扫描受内存带宽限制（约 12 GB/s），当前 0.36 ms/查询已接近该规模的实测下限。
 - 均匀随机 128 维是 HNSW 的困难负载：M=16 在 ef=256 时召回只有约 0.87，因此固定使用 M=32。
 - WAL 每累积约 64 MiB 触发一次 checkpoint（刷页 + fsync 后截断），正常关闭时也会截断。
 - 每次提交都写整页镜像；大事务的日志量约为脏页数的 8 KiB 倍，行级逻辑日志可进一步压缩（M5）。
 - B+tree 删除只摘除键，不做节点合并；长期大量删除后索引文件不会收缩。
-- 尚无向量索引，`ANN` 模式不存在，所有向量检索均为精确扫描（M4）。
-- 排序与结果集在内存中完成；超大结果集的 `ORDER BY` 未做外排。
+- 带 LIMIT 的排序有界保留 K 行；无 LIMIT 的完整结果仍在内存中组装，尚未做外部排序与流式结果输出。
 - 错误码为 MySQL 约定的推测值，待题包发布后按官方表重映射。

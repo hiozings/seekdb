@@ -1,9 +1,9 @@
-{"columns": ["1"], "rows": [["1"]]}
-{"columns": ["one", "label"], "rows": [["1", "x"]]}
-{}
-{}
-{}
-{}
+{"columns": ["1"], "rows": [[1]]}
+{"columns": ["one", "label"], "rows": [[1, "x"]]}
+{"error": "unsupported_sql"}
+{"error": "unsupported_sql"}
+{"error": "unsupported_sql"}
+{"error": "unsupported_sql"}
 {}
 {}
 {"affected_rows": 1}

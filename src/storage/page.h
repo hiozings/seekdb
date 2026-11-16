@@ -32,7 +32,10 @@ inline uint16_t rid_slot(RID rid) { return static_cast<uint16_t>(rid & 0xFFFFu);
 // recovery can compare it without knowing the page layout.
 //
 // Each slot is 4 bytes: uint16 offset, uint16 length. length == 0 marks a dead
-// slot, which is reusable by a later insert.
+// slot, which is reusable by a later insert. The length high bit tags an
+// overflow-row pointer; the remaining bits hold its physical byte length.
+// Overflow pages have flags bit 0 set, next-page ID at 16, chunk length at 20,
+// and chunk bytes at 24; their next-page sentinel is UINT32_MAX.
 class Page {
  public:
   static constexpr size_t kPageSize = 8192;
@@ -50,6 +53,12 @@ class Page {
   std::string_view get(uint16_t slot) const;
   bool live(uint16_t slot) const;
   bool erase(uint16_t slot);
+  bool is_overflow(uint16_t slot) const;
+  void set_overflow(uint16_t slot);
+  bool is_overflow_page() const;
+  void set_overflow_page(uint32_t next, std::string_view chunk);
+  uint32_t overflow_next() const;
+  std::string_view overflow_chunk() const;
   // Rewrites in place only when the new record fits the existing slot.
   bool rewrite(uint16_t slot, const std::string& record);
   // True when a record of `len` bytes can fit after compaction.

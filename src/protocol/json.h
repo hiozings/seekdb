@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -16,6 +17,9 @@ class JsonValue {
 
   Type type = Type::Null;
   bool boolean = false;
+  // Byte span in the original parse input, valid after successful parsing.
+  size_t source_begin = 0;
+  size_t source_length = 0;
   std::string text;  // String contents, or the raw literal for Number
   std::vector<std::pair<std::string, JsonValue>> members;
   std::vector<JsonValue> elements;

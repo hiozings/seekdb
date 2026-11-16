@@ -16,7 +16,7 @@ namespace {
 
 constexpr uint32_t kRecordMagic = 0x4D564457;  // "MVDW"
 constexpr size_t kHeaderSize = 40;
-constexpr size_t kMaxPayload = 64 * 1024;
+constexpr size_t kMaxPayload = 64 * 1024 * 1024;
 constexpr size_t kFlushThreshold = 1024 * 1024;
 constexpr char kEpochMagic[8] = {'M', 'V', 'D', 'B', 'E', 'P', 'O', '1'};
 
@@ -163,6 +163,13 @@ bool Wal::log_page_image(uint64_t txid, uint32_t file_tag, uint32_t page_id, uin
   buffer_ += build_record(Type::kPageImage, lsn, txid, file_tag, page_id, image, image_len);
   if (buffer_.size() >= kFlushThreshold) return flush_buffer();
   return true;
+}
+
+bool Wal::log_catalog_image(uint64_t txid, const std::string& image) {
+  if (fd_ < 0 || image.size() > kMaxPayload) return false;
+  buffer_ += build_record(Type::kCatalogImage, allocate_lsn(), txid, 0, 0,
+                          image.data(), image.size());
+  return flush_buffer();
 }
 
 bool Wal::log_commit(uint64_t txid) {

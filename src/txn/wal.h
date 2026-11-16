@@ -25,6 +25,7 @@ class Wal {
     kPageImage = 1,
     kCommit = 2,
     kCheckpoint = 3,
+    kCatalogImage = 4,
   };
 
   struct Record {
@@ -49,6 +50,7 @@ class Wal {
 
   bool log_page_image(uint64_t txid, uint32_t file_tag, uint32_t page_id, uint64_t lsn,
                       const char* image, size_t image_len);
+  bool log_catalog_image(uint64_t txid, const std::string& image);
   bool log_commit(uint64_t txid);
   bool log_checkpoint(uint64_t lsn);
 

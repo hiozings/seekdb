@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <string>
 #include <memory>
 #include <vector>
 #include <unordered_map>
@@ -14,24 +16,32 @@ namespace mvdb {
 // still holding.
 class BufferPool {
  public:
-  BufferPool(int fd, size_t capacity_pages);
-  ~BufferPool() = default;
+  BufferPool(int fd, size_t capacity_pages, std::string data_path = {});
+  ~BufferPool();
+  BufferPool(const BufferPool&) = delete;
+  BufferPool& operator=(const BufferPool&) = delete;
+  BufferPool(BufferPool&&) = delete;
+  BufferPool& operator=(BufferPool&&) = delete;
 
   std::shared_ptr<Page> fetch(uint32_t page_id);
   void mark_dirty(const std::shared_ptr<Page>& page);
 
   // Pages dirtied by `txid` and not yet logged. Their owner is stamped by
-  // mark_dirty(), and the pool refuses to evict owned pages, which keeps
-  // uncommitted bytes off disk.
+  // mark_dirty(). Owned pages may spill to an unlinked temporary file, but
+  // never to the data file before the transaction WAL is durable.
   struct DirtyPage {
     uint32_t page_id = 0;
     std::shared_ptr<Page> page;
   };
   std::vector<DirtyPage> collect_dirty(uint64_t txid);
+  // Visits one latest image at a time, without materializing the entire txn.
+  // The visitor must not re-enter the pool. Changes (e.g. LSN) are retained.
+  void visit_dirty(uint64_t txid, const std::function<void(uint32_t, Page&)>& visitor);
   void set_current_txn(uint64_t txid) { current_txn_ = txid; }
-  // Clears ownership after a commit or rollback, making pages evictable again.
+  // Call only after WAL is durable. Publishes spilled images before clearing
+  // ownership. Throws on I/O failure and retains pending state for recovery.
   void release_txn(uint64_t txid);
-  // Writes every dirty page back to the file.
+  // Writes logged dirty pages only; owned pages remain private.
   void flush_all();
   // flush_all() followed by fdatasync.
   bool sync();
@@ -51,7 +61,13 @@ class BufferPool {
   // Returns false when every cached page is pinned by a caller.
   bool evict_one();
 
+  void spill(uint32_t page_id, const Page& page);
+  void close_spill() noexcept;
+
   int fd_;
+  std::string data_path_;
+  int spill_fd_ = -1;
+  std::unordered_map<uint32_t, uint64_t> spilled_;
   size_t capacity_;
   uint64_t tick_ = 0;
   uint64_t current_txn_ = 0;

@@ -80,8 +80,7 @@ bool write_all(int fd, const std::string& data) {
 
 }  // namespace
 
-bool save_catalog(const std::string& path, const std::vector<TableMeta>& tables,
-                  uint32_t next_table_id) {
+std::string encode_catalog(const std::vector<TableMeta>& tables, uint32_t next_table_id) {
   std::string buffer(kMagic, sizeof(kMagic));
   put_u32(buffer, kVersion);
   put_u32(buffer, next_table_id);
@@ -101,6 +100,12 @@ bool save_catalog(const std::string& path, const std::vector<TableMeta>& tables,
     put_i64(buffer, table.vector_column);
   }
 
+  return buffer;
+}
+
+bool save_catalog(const std::string& path, const std::vector<TableMeta>& tables,
+                  uint32_t next_table_id) {
+  const std::string buffer = encode_catalog(tables, next_table_id);
   const std::string tmp = path + ".tmp";
   const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
   if (fd < 0) return false;
@@ -146,6 +151,11 @@ bool load_catalog(const std::string& path, std::vector<TableMeta>& tables,
   }
   ::close(fd);
 
+  return decode_catalog(data, tables, next_table_id);
+}
+
+bool decode_catalog(std::string_view data, std::vector<TableMeta>& tables, uint32_t& next_table_id) {
+  tables.clear();
   if (data.size() < sizeof(kMagic) || std::memcmp(data.data(), kMagic, sizeof(kMagic)) != 0) {
     return false;
   }

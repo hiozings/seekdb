@@ -43,6 +43,14 @@ class Parser {
   }
 
   bool parse_value(JsonValue& out, int depth) {
+    const size_t start = pos_;
+    if (!parse_value_contents(out, depth)) return false;
+    out.source_begin = start;
+    out.source_length = pos_ - start;
+    return true;
+  }
+
+  bool parse_value_contents(JsonValue& out, int depth) {
     if (depth > 32) return fail("JSON nesting too deep");
     if (pos_ >= input_.size()) return fail("unexpected end of JSON");
     const char c = input_[pos_];
@@ -122,6 +130,7 @@ class Parser {
     out.clear();
     while (pos_ < input_.size()) {
       const char c = input_[pos_];
+      if (static_cast<unsigned char>(c) < 0x20) return fail("unescaped control in JSON string");
       if (c == '"') {
         ++pos_;
         return true;
@@ -140,20 +149,18 @@ class Parser {
           case 'r': out.push_back('\r'); break;
           case 't': out.push_back('\t'); break;
           case 'u': {
-            if (pos_ + 4 > input_.size()) return fail("truncated \\u escape");
             unsigned code = 0;
-            for (int i = 0; i < 4; ++i) {
-              const char h = input_[pos_++];
-              code <<= 4;
-              if (h >= '0' && h <= '9') {
-                code |= static_cast<unsigned>(h - '0');
-              } else if (h >= 'a' && h <= 'f') {
-                code |= static_cast<unsigned>(h - 'a' + 10);
-              } else if (h >= 'A' && h <= 'F') {
-                code |= static_cast<unsigned>(h - 'A' + 10);
-              } else {
-                return fail("bad \\u escape");
-              }
+            if (!parse_hex4(code)) return false;
+            if (code >= 0xD800 && code <= 0xDBFF) {
+              if (pos_ + 2 > input_.size() || input_[pos_] != '\\' ||
+                  input_[pos_ + 1] != 'u') return fail("missing low surrogate");
+              pos_ += 2;
+              unsigned low = 0;
+              if (!parse_hex4(low)) return false;
+              if (low < 0xDC00 || low > 0xDFFF) return fail("invalid low surrogate");
+              code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+            } else if (code >= 0xDC00 && code <= 0xDFFF) {
+              return fail("unpaired low surrogate");
             }
             append_utf8(out, code);
             break;
@@ -169,14 +176,33 @@ class Parser {
     return fail("unterminated string");
   }
 
+  bool parse_hex4(unsigned& code) {
+    if (pos_ + 4 > input_.size()) return fail("truncated Unicode escape");
+    code = 0;
+    for (int i = 0; i < 4; ++i) {
+      const char h = input_[pos_++];
+      code <<= 4;
+      if (h >= '0' && h <= '9') code |= static_cast<unsigned>(h - '0');
+      else if (h >= 'a' && h <= 'f') code |= static_cast<unsigned>(h - 'a' + 10);
+      else if (h >= 'A' && h <= 'F') code |= static_cast<unsigned>(h - 'A' + 10);
+      else return fail("bad Unicode escape");
+    }
+    return true;
+  }
+
   static void append_utf8(std::string& out, unsigned code) {
     if (code < 0x80) {
       out.push_back(static_cast<char>(code));
     } else if (code < 0x800) {
       out.push_back(static_cast<char>(0xC0 | (code >> 6)));
       out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
-    } else {
+    } else if (code < 0x10000) {
       out.push_back(static_cast<char>(0xE0 | (code >> 12)));
+      out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+    } else {
+      out.push_back(static_cast<char>(0xF0 | (code >> 18)));
+      out.push_back(static_cast<char>(0x80 | ((code >> 12) & 0x3F)));
       out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
       out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
     }
@@ -208,15 +234,27 @@ class Parser {
   bool parse_number(JsonValue& out) {
     const size_t start = pos_;
     if (pos_ < input_.size() && input_[pos_] == '-') ++pos_;
-    while (pos_ < input_.size()) {
-      const char c = input_[pos_];
-      if ((c >= '0' && c <= '9') || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-') {
-        ++pos_;
-      } else {
-        break;
-      }
+    const auto digit = [&]() {
+      return pos_ < input_.size() && input_[pos_] >= '0' && input_[pos_] <= '9';
+    };
+    if (!digit()) return fail("expected digit in number");
+    if (input_[pos_] == '0') {
+      ++pos_;
+      if (digit()) return fail("leading zero in number");
+    } else {
+      while (digit()) ++pos_;
     }
-    if (pos_ == start) return fail("invalid number");
+    if (pos_ < input_.size() && input_[pos_] == '.') {
+      ++pos_;
+      if (!digit()) return fail("expected fraction digits");
+      while (digit()) ++pos_;
+    }
+    if (pos_ < input_.size() && (input_[pos_] == 'e' || input_[pos_] == 'E')) {
+      ++pos_;
+      if (pos_ < input_.size() && (input_[pos_] == '+' || input_[pos_] == '-')) ++pos_;
+      if (!digit()) return fail("expected exponent digits");
+      while (digit()) ++pos_;
+    }
     out.type = JsonValue::Type::Number;
     out.text = std::string(input_.substr(start, pos_ - start));
     return true;

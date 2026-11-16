@@ -240,25 +240,30 @@ std::vector<float> parse_vector_text(std::string_view text) {
   std::vector<float> out;
   out.reserve(inner.size() / 8 + 1);
   size_t i = 0;
+  const auto skip_space = [&]() {
+    while (i < inner.size() && std::isspace(static_cast<unsigned char>(inner[i]))) ++i;
+  };
+  skip_space();
   while (i < inner.size()) {
-    while (i < inner.size() &&
-           (inner[i] == ' ' || inner[i] == '\t' || inner[i] == ',' || inner[i] == '\n')) {
-      ++i;
-    }
-    if (i >= inner.size()) break;
     const char* first = inner.data() + i;
     const char* last = inner.data() + inner.size();
     double value = 0.0;
     const auto result = std::from_chars(first, last, value, std::chars_format::general);
     if (result.ec != std::errc() || result.ptr == first) {
       throw_sql_error(kErrIncorrectValue,
-                      "invalid number in vector literal: " + std::string(first, 16));
+                      "invalid number in vector literal: " + std::string(inner.substr(i, 16)));
     }
     out.push_back(to_float32(value, "vector literal"));
     i = static_cast<size_t>(result.ptr - inner.data());
-    if (i < inner.size() && inner[i] != ',' && inner[i] != ' ' && inner[i] != '\t' &&
-        inner[i] != '\n') {
-      throw_sql_error(kErrIncorrectValue, "invalid character in vector literal");
+    skip_space();
+    if (i == inner.size()) break;
+    if (inner[i] != ',') {
+      throw_sql_error(kErrIncorrectValue, "expected comma in vector literal");
+    }
+    ++i;
+    skip_space();
+    if (i == inner.size()) {
+      throw_sql_error(kErrIncorrectValue, "missing element after comma in vector literal");
     }
   }
   return out;
@@ -283,12 +288,7 @@ class Parser {
     } else if (kw == "set") {
       parse_set_mode(stmt);
     } else if (kw == "use") {
-      // Session database selection: accepted as a no-op, the engine has a
-      // single data directory.
-      advance();
-      if (peek().kind == TokenKind::End) incomplete("expected a database name");
-      advance();
-      stmt.kind = Statement::Kind::NoOp;
+      throw_sql_error(kErrNotSupported, "USE is not supported");
     } else if (kw == "drop") {
       parse_drop_table(stmt);
     } else if (kw == "insert") {
@@ -445,16 +445,8 @@ class Parser {
     if (peek().kind == TokenKind::StrLit) {
       const std::string_view text = peek().text;
       advance();
-      std::string_view trimmed = text;
-      while (!trimmed.empty() && std::isspace(static_cast<unsigned char>(trimmed.front()))) {
-        trimmed.remove_prefix(1);
-      }
-      while (!trimmed.empty() && std::isspace(static_cast<unsigned char>(trimmed.back()))) {
-        trimmed.remove_suffix(1);
-      }
-      if (!trimmed.empty() && trimmed.front() == '[') {
-        return Value::make_vec(parse_vector_text(text));
-      }
+      // SQL string literals keep their type until the target column or
+      // L2_DISTANCE argument supplies the vector context.
       return Value::make_str(std::string(text));
     }
     if (peek().kind == TokenKind::LBracket) {
@@ -495,12 +487,7 @@ class Parser {
   void parse_set_mode(Statement& stmt) {
     expect_kw("set");
     if (!is_kw(peek(), "mode")) {
-      // Drivers commonly issue session settings (SET NAMES, SET autocommit,
-      // SET SESSION ...). They do not change engine behaviour, so accept them
-      // instead of failing the whole test case.
-      while (peek().kind != TokenKind::End) advance();
-      stmt.kind = Statement::Kind::NoOp;
-      return;
+      throw_sql_error(kErrNotSupported, "unsupported session setting");
     }
     stmt.kind = Statement::Kind::SetMode;
     advance();
@@ -671,6 +658,7 @@ class Parser {
           item.column = expect_ident("a vector column");
           expect(TokenKind::Comma, "','");
           Value query = parse_literal();
+          if (query.kind == Value::Kind::Str) query = Value::make_vec(parse_vector_text(query.s));
           if (query.kind != Value::Kind::Vec) {
             throw_sql_error(kErrIncorrectValue, "L2_DISTANCE query must be a vector literal");
           }
@@ -678,6 +666,7 @@ class Parser {
           expect(TokenKind::RParen, "')'");
           item.alias = "__order_distance_" + std::to_string(stmt.select_items.size());
           key.name = item.alias;
+          key.select_item_index = static_cast<int>(stmt.select_items.size());
           stmt.select_items.push_back(std::move(item));
         } else {
           key.name = expect_ident("an ORDER BY column");
@@ -721,6 +710,7 @@ class Parser {
       item.column = expect_ident("a vector column");
       expect(TokenKind::Comma, "','");
       Value query = parse_literal();
+      if (query.kind == Value::Kind::Str) query = Value::make_vec(parse_vector_text(query.s));
       if (query.kind != Value::Kind::Vec) {
         throw_sql_error(kErrIncorrectValue, "L2_DISTANCE query must be a vector literal");
       }

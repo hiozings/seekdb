@@ -12,6 +12,8 @@
 #include <cstdlib>
 #include <cstdio>
 #include <set>
+#include <system_error>
+#include <new>
 #include <utility>
 
 #include "storage/btree.h"
@@ -66,7 +68,7 @@ struct PreparedCondition {
 };
 
 Engine::Engine(std::string data_dir, size_t pool_pages)
-    : data_dir_(std::move(data_dir)), pool_pages_(pool_pages) {
+    : data_dir_(std::move(data_dir)), pool_pages_(pool_pages), undo_(data_dir_) {
   if (!data_dir_.empty() && data_dir_.back() == '/') data_dir_.pop_back();
   catalog_path_ = data_dir_ + "/catalog.meta";
   wal_path_ = data_dir_ + "/wal.log";
@@ -89,7 +91,7 @@ Engine::~Engine() {
 void Engine::shutdown() {
   if (in_txn_) {
     rollback_to(0);
-    release_current_txn();
+    commit_txn();
     in_txn_ = false;
   }
   checkpoint();
@@ -150,10 +152,13 @@ bool Engine::open(std::string& error) {
       }
       state->pk_index->mark_built();
     }
-    // The vector graph is derived state and is built on demand (first
-    // approximate query), so opening a database never pays for it.
     by_name_[lower(meta.name)] = meta.id;
     tables_[meta.id] = std::move(state);
+  }
+  // Rebuild admitted derived graphs before the caller emits ready. Tables
+  // outside the global graph budget use the exact scan fallback.
+  for (auto& entry : tables_) {
+    if (entry.second->meta.has_vector_index) build_vector_index(*entry.second);
   }
   return true;
 }
@@ -167,8 +172,10 @@ ResultSet Engine::exec_drop_table(const Statement& stmt) {
   if (in_txn_) {
     throw_sql_error(kErrNotSupported, "DROP TABLE is not supported inside a transaction");
   }
-  drop_table(it->second);
-  if (!save_catalog()) throw_sql_error(kErrInternal, "cannot persist catalog");
+  const uint32_t table_id = it->second;
+  drop_table(table_id, false);
+  dropped_tables_.push_back(table_id);
+  catalog_dirty_ = true;
   return ResultSet{};
 }
 
@@ -183,13 +190,15 @@ ResultSet Engine::exec_create_vector_index(const Statement& stmt) {
   }
   table.meta.has_vector_index = true;
   table.meta.vector_column = static_cast<int32_t>(column);
-  build_vector_index(table);
-  if (!save_catalog()) {
+  try {
+    build_vector_index(table);
+  } catch (...) {
     table.meta.has_vector_index = false;
     table.meta.vector_column = -1;
     table.vec_index.reset();
-    throw_sql_error(kErrInternal, "cannot persist catalog");
+    throw;
   }
+  catalog_dirty_ = true;
   undo_.push_back(UndoOp{UndoOp::Kind::CreatedVectorIndex, table.meta.id, 0, 0, {}});
   return ResultSet{};
 }
@@ -212,8 +221,18 @@ void Engine::ensure_scan_cache(TableState& table, int vector_column) {
   if (vector_column < 0) return;
   const int64_t dim = meta.columns[static_cast<size_t>(vector_column)].dim;
   const size_t rows = table.pk_index ? static_cast<size_t>(table.pk_index->size()) : 0;
-  const size_t bytes = rows * (static_cast<size_t>(dim) * sizeof(float) + sizeof(int64_t) + 16);
-  if (bytes > cache_budget_bytes_ || rows == 0) return;
+  size_t row_budget = sizeof(int64_t) + sizeof(uint32_t);
+  for (const auto& col : meta.columns) {
+    const uint64_t count = col.type == ColumnType::Vector ? col.dim :
+                           col.type == ColumnType::Varchar ? col.length : 2;
+    if (count > cache_budget_bytes_ / 4) return;
+    row_budget += static_cast<size_t>(count) * 4 + 4;
+  }
+  if (rows == 0 || row_budget > cache_budget_bytes_ / rows) return;
+  // Keep only one optional scan cache; other tables remain fully queryable.
+  for (auto& entry : tables_) {
+    if (entry.second.get() != &table) invalidate_cache(*entry.second);
+  }
 
   ScanCache cache;
   cache.vector_column = vector_column;
@@ -277,7 +296,9 @@ void Engine::ensure_scan_cache(TableState& table, int vector_column) {
       return;
     }
     cache.ids.push_back(pk);
-    cache.vectors.insert(cache.vectors.end(), vec, vec + dim);
+    const size_t vector_offset = cache.vectors.size();
+    cache.vectors.resize(vector_offset + static_cast<size_t>(dim));
+    std::memcpy(cache.vectors.data() + vector_offset, vec, static_cast<size_t>(dim) * sizeof(float));
     cache.scalars.insert(cache.scalars.end(), row_scalars.begin(), row_scalars.end());
     cache.offsets.push_back(static_cast<uint32_t>(cache.scalars.size()));
   });
@@ -289,7 +310,7 @@ void Engine::ensure_scan_cache(TableState& table, int vector_column) {
 
 void Engine::ensure_bitmap_index(TableState& table, int column) {
   ColumnBitmaps& bitmaps = table.bitmaps;
-  if (bitmaps.valid && bitmaps.column == column) return;
+  if ((bitmaps.valid || bitmaps.disabled) && bitmaps.column == column) return;
   bitmaps = ColumnBitmaps{};
   if (!table.cache.valid || column < 0) return;
   const TableMeta& meta = table.meta;
@@ -323,6 +344,14 @@ void Engine::ensure_bitmap_index(TableState& table, int column) {
       }
     }
     if (target == nullptr) continue;
+    // One full bitmap per distinct value is quadratic for primary keys.
+    // Bound the accelerator; a disabled bitmap falls back to a linear scan.
+    if (bitmaps.int_values.size() + bitmaps.str_values.size() >= 64) {
+      bitmaps = ColumnBitmaps{};
+      bitmaps.column = column;
+      bitmaps.disabled = true;
+      return;
+    }
     auto& bits = bitmaps.words;
     const size_t word = r / 64;
     const uint64_t mask = 1ULL << (r % 64);
@@ -392,7 +421,34 @@ bool Engine::cached_row_matches(const TableMeta& meta,
   return true;
 }
 
+size_t Engine::vector_index_bytes(const TableState& table) const {
+  size_t row_budget = 1024;  // graph links, Value objects and allocator overhead
+  for (const auto& col : table.meta.columns) {
+    const uint64_t count = col.type == ColumnType::Vector ? col.dim * uint64_t{2} :
+                           col.type == ColumnType::Varchar ? col.length : 2;
+    if (count > cache_budget_bytes_ / 4) return cache_budget_bytes_;
+    row_budget += static_cast<size_t>(count) * 4;
+  }
+  const size_t rows = table.pk_index->size() +
+                      (table.vec_index ? table.vec_index->tombstones() : 0);
+  return rows != 0 && row_budget > cache_budget_bytes_ / rows ? cache_budget_bytes_ : rows * row_budget;
+}
+
+bool Engine::vector_index_fits(const TableState& table) const {
+  size_t bytes = vector_index_bytes(table);
+  for (const auto& entry : tables_) {
+    if (entry.second.get() != &table && entry.second->vec_index) {
+      bytes += vector_index_bytes(*entry.second);
+      if (bytes > cache_budget_bytes_ / 2) return false;
+    }
+  }
+  return bytes <= cache_budget_bytes_ / 2;
+}
+
 void Engine::build_vector_index(TableState& table) {
+  table.vec_index.reset();
+  table.vec_dirty = false;
+  if (!vector_index_fits(table)) return;  // exact fallback for larger indexes
   const auto started = std::chrono::steady_clock::now();
   const TableMeta& meta = table.meta;
   if (meta.vector_column < 0 || static_cast<size_t>(meta.vector_column) >= meta.columns.size()) {
@@ -443,7 +499,7 @@ size_t Engine::require_column(const TableMeta& meta, const std::string& name) co
   throw_sql_error(kErrUnknownColumn, "Unknown column '" + name + "'");
 }
 
-Value Engine::coerce(const TableMeta& meta, size_t column_index, const Value& input) const {
+Value Engine::coerce(const TableMeta& meta, size_t column_index, const Value& input, bool check_length) const {
   const Column& col = meta.columns[column_index];
   switch (col.type) {
     case ColumnType::BigInt: {
@@ -472,7 +528,7 @@ Value Engine::coerce(const TableMeta& meta, size_t column_index, const Value& in
         throw_sql_error(kErrIncorrectValue, "Invalid UTF-8 for column '" + col.name + "'");
       }
       const size_t chars = utf8_codepoint_count(text);
-      if (static_cast<int64_t>(chars) > col.length) {
+      if (check_length && static_cast<int64_t>(chars) > col.length) {
         throw_sql_error(kErrVarcharTooLong,
                         "Data too long for column '" + col.name + "' (" + std::to_string(chars) +
                             " > " + std::to_string(col.length) + " characters)");
@@ -506,7 +562,7 @@ std::vector<PreparedCondition> Engine::prepare_filter(const TableMeta& meta,
   out.reserve(conds.size());
   for (const Condition& cond : conds) {
     const size_t idx = require_column(meta, cond.column);
-    out.push_back(PreparedCondition{idx, cond.op, coerce(meta, idx, cond.literal)});
+    out.push_back(PreparedCondition{idx, cond.op, coerce(meta, idx, cond.literal, false)});
   }
   return out;
 }
@@ -623,7 +679,7 @@ bool Engine::matches(const TableMeta& meta, const std::vector<Value>& row,
   for (const Condition& cond : conds) {
     const size_t idx = require_column(meta, cond.column);
     const Value& actual = row[idx];
-    const Value expected = coerce(meta, idx, cond.literal);
+    const Value expected = coerce(meta, idx, cond.literal, false);
     if (actual.kind == Value::Kind::Vec || expected.kind == Value::Kind::Vec) {
       throw_sql_error(kErrNotSupported, "comparison on VECTOR columns is not supported");
     }
@@ -664,6 +720,9 @@ ResultSet Engine::exec_create(const Statement& stmt) {
     meta.columns.push_back(std::move(col));
   }
 
+  // A previous uncommitted CREATE can leave orphan files with this ID.
+  ::unlink(heap_path(meta.id).c_str());
+  ::unlink(btree_path(meta.id).c_str());
   auto state = std::make_unique<TableState>();
   state->meta = meta;
   state->heap = std::make_unique<HeapFile>(heap_path(meta.id), pool_pages_);
@@ -674,14 +733,13 @@ ResultSet Engine::exec_create(const Statement& stmt) {
   if (!state->pk_index->open() || !state->pk_index->mark_built()) {
     throw_sql_error(kErrInternal, "cannot create index for table '" + stmt.table + "'");
   }
+  state->heap->set_current_txn(current_txn_);
+  state->pk_index->set_current_txn(current_txn_);
   const uint32_t table_id = meta.id;
   tables_[table_id] = std::move(state);
   by_name_[key] = table_id;
   ++next_table_id_;
-  if (!save_catalog()) {
-    drop_table(table_id);
-    throw_sql_error(kErrInternal, "cannot persist catalog");
-  }
+  catalog_dirty_ = true;
   undo_.push_back(UndoOp{UndoOp::Kind::CreatedTable, table_id, 0, 0, {}});
   return ResultSet{};
 }
@@ -736,6 +794,7 @@ ResultSet Engine::exec_insert(const Statement& stmt) {
     timings_.insert_index_ms +=
         std::chrono::duration<double, std::milli>(t_done - t_index).count();
     invalidate_cache(table);
+    if (table.vec_index && !vector_index_fits(table)) table.vec_index.reset();
     if (table.vec_index) {
       table.vec_index->add(pk, values[static_cast<size_t>(table.meta.vector_column)].v, values);
     }
@@ -749,26 +808,31 @@ ResultSet Engine::exec_insert(const Statement& stmt) {
 
 ResultSet Engine::exec_delete(const Statement& stmt) {
   TableState& table = require_table(stmt.table);
-  struct Victim {
-    RID rid;
-    int64_t pk;
-    std::string record;
-  };
-  std::vector<Victim> victims;
+  RecordSpool victims(data_dir_);
+  const auto prepared = stmt.has_where ? prepare_filter(table.meta, stmt.where)
+                                       : std::vector<PreparedCondition>{};
   table.heap->scan([&](RID rid, std::string_view bytes) {
     std::vector<Value> row;
     if (!decode_row(table.meta, bytes, row)) return;
-    if (stmt.has_where && !matches(table.meta, row, stmt.where)) return;
-    victims.push_back(Victim{rid, row[table.meta.pk_index].i, std::string(bytes)});
+    if (!matches_prepared(prepared, row)) return;
+    std::string target(reinterpret_cast<const char*>(&rid), sizeof(rid));
+    const int64_t pk = row[table.meta.pk_index].i;
+    target.append(reinterpret_cast<const char*>(&pk), sizeof(pk));
+    target.append(bytes);
+    victims.append(target);
   });
-
-  for (const Victim& victim : victims) {
-    table.heap->erase(victim.rid);
-    table.pk_index->erase(victim.pk);
+  victims.for_each([&](std::string_view target) {
+    RID rid;
+    int64_t pk;
+    std::memcpy(&rid, target.data(), sizeof(rid));
+    std::memcpy(&pk, target.data()+sizeof(rid), sizeof(pk));
+    std::string record(target.substr(sizeof(rid)+sizeof(pk)));
+    table.heap->erase(rid);
+    table.pk_index->erase(pk);
     invalidate_cache(table);
-    if (table.vec_index) table.vec_index->remove(victim.pk);
-    undo_.push_back(UndoOp{UndoOp::Kind::DeletedRow, table.meta.id, victim.pk, 0, victim.record});
-  }
+    if (table.vec_index) table.vec_index->remove(pk);
+    undo_.push_back(UndoOp{UndoOp::Kind::DeletedRow, table.meta.id, pk, 0, record});
+  });
   ResultSet rs;
   rs.has_affected_rows = true;
   rs.affected_rows = static_cast<int64_t>(victims.size());
@@ -790,45 +854,46 @@ ResultSet Engine::exec_update(const Statement& stmt) {
     assignments.push_back(Assignment{idx, coerce(table.meta, idx, item.second)});
   }
 
-  struct Target {
-    RID rid;
-    int64_t pk;
-    std::string old_record;
-    std::vector<Value> new_values;
-  };
-  std::vector<Target> targets;
+  RecordSpool targets(data_dir_);
+  const auto prepared = stmt.has_where ? prepare_filter(table.meta, stmt.where)
+                                       : std::vector<PreparedCondition>{};
   table.heap->scan([&](RID rid, std::string_view bytes) {
     std::vector<Value> row;
     if (!decode_row(table.meta, bytes, row)) return;
-    if (stmt.has_where && !matches(table.meta, row, stmt.where)) return;
-    Target target;
-    target.rid = rid;
-    target.pk = row[table.meta.pk_index].i;
-    target.old_record.assign(bytes.data(), bytes.size());
-    for (const Assignment& assignment : assignments) {
-      row[assignment.column] = assignment.value;
-    }
-    target.new_values = std::move(row);
-    targets.push_back(std::move(target));
+    if (!matches_prepared(prepared, row)) return;
+    const int64_t pk = row[table.meta.pk_index].i;
+    const uint64_t old_size = bytes.size();
+    std::string target(reinterpret_cast<const char*>(&rid), sizeof(rid));
+    target.append(reinterpret_cast<const char*>(&pk), sizeof(pk));
+    target.append(reinterpret_cast<const char*>(&old_size), sizeof(old_size));
+    target.append(bytes);
+    for (const Assignment& assignment : assignments) row[assignment.column] = assignment.value;
+    target.append(encode_row(table.meta, row));
+    targets.append(target);
   });
-
-  for (const Target& target : targets) {
-    const std::string encoded = encode_row(table.meta, target.new_values);
-    const RID new_rid = table.heap->update(target.rid, encoded);
-    if (new_rid == kInvalidRid) {
-      throw_sql_error(kErrInternal, "cannot allocate space for updated row");
-    }
-    table.pk_index->insert(target.pk, new_rid);
+  targets.for_each([&](std::string_view target) {
+    RID rid;
+    int64_t pk;
+    uint64_t old_size;
+    size_t pos = 0;
+    std::memcpy(&rid, target.data()+pos, sizeof(rid)); pos += sizeof(rid);
+    std::memcpy(&pk, target.data()+pos, sizeof(pk)); pos += sizeof(pk);
+    std::memcpy(&old_size, target.data()+pos, sizeof(old_size)); pos += sizeof(old_size);
+    const std::string old_record(target.substr(pos, old_size));
+    const std::string encoded(target.substr(pos+old_size));
+    const RID new_rid = table.heap->update(rid, encoded);
+    if (new_rid == kInvalidRid) throw_sql_error(kErrInternal, "cannot allocate space for updated row");
+    table.pk_index->insert(pk, new_rid);
     invalidate_cache(table);
+    if (table.vec_index && !vector_index_fits(table)) table.vec_index.reset();
     if (table.vec_index) {
-      table.vec_index->remove(target.pk);
-      table.vec_index->add(target.pk,
-                           target.new_values[static_cast<size_t>(table.meta.vector_column)].v,
-                           target.new_values);
+      std::vector<Value> values;
+      if (!decode_row(table.meta, encoded, values)) throw_sql_error(kErrInternal, "invalid staged row");
+      table.vec_index->remove(pk);
+      table.vec_index->add(pk, values[static_cast<size_t>(table.meta.vector_column)].v, values);
     }
-    undo_.push_back(
-        UndoOp{UndoOp::Kind::UpdatedRow, table.meta.id, target.pk, new_rid, target.old_record});
-  }
+    undo_.push_back(UndoOp{UndoOp::Kind::UpdatedRow, table.meta.id, pk, new_rid, old_record});
+  });
   ResultSet rs;
   rs.has_affected_rows = true;
   rs.affected_rows = static_cast<int64_t>(targets.size());
@@ -842,6 +907,9 @@ ResultSet Engine::exec_select(const Statement& stmt) {
     std::vector<std::string> row;
     for (const SelectItem& item : stmt.select_items) {
       rs.columns.push_back(item.alias.empty() ? item.literal_text : item.alias);
+      rs.column_kinds.push_back(item.literal.kind == Value::Kind::Int ? CellKind::Int :
+                                item.literal.kind == Value::Kind::Float ? CellKind::Float :
+                                item.literal.kind == Value::Kind::Vec ? CellKind::Vector : CellKind::Str);
       switch (item.literal.kind) {
         case Value::Kind::Int: row.push_back(std::to_string(item.literal.i)); break;
         case Value::Kind::Float: row.push_back(format_double(item.literal.d, float_fmt_)); break;
@@ -871,7 +939,9 @@ ResultSet Engine::exec_select(const Statement& stmt) {
       spec.name = meta.columns[i].name;
       specs.push_back(std::move(spec));
     }
-  } else {
+  }
+  {
+    // Include hidden ORDER BY expressions after expanding SELECT *.
     for (const SelectItem& item : stmt.select_items) {
       OutputSpec spec;
       spec.table_index = require_column(meta, item.column);
@@ -904,7 +974,10 @@ ResultSet Engine::exec_select(const Statement& stmt) {
   for (const OrderKey& key : stmt.order_by) {
     SortKeySpec spec;
     spec.asc = key.asc;
-    for (size_t i = 0; i < specs.size(); ++i) {
+    if (key.select_item_index >= 0) {
+      spec.out_index = key.select_item_index + (stmt.select_star ? static_cast<int>(meta.columns.size()) : 0);
+    }
+    for (size_t i = 0; spec.out_index < 0 && i < specs.size(); ++i) {
       if (iequals(specs[i].name, key.name)) {
         spec.out_index = static_cast<int>(i);
         break;
@@ -932,6 +1005,18 @@ ResultSet Engine::exec_select(const Statement& stmt) {
     int64_t pk = 0;
   };
   std::vector<OutRow> out_rows;
+  const auto row_less = [&](const OutRow& a, const OutRow& b) {
+    for (const SortKeySpec& key : sort_keys) {
+      const Value& va = key.out_index >= 0 ? a.raw[static_cast<size_t>(key.out_index)]
+                                         : a.extras[static_cast<size_t>(key.extra_index)];
+      const Value& vb = key.out_index >= 0 ? b.raw[static_cast<size_t>(key.out_index)]
+                                         : b.extras[static_cast<size_t>(key.extra_index)];
+      int cmp = compare_values(va, vb);
+      if (!key.asc) cmp = -cmp;
+      if (cmp != 0) return cmp < 0;
+    }
+    return a.pk < b.pk;
+  };
 
   int dist_slot = -1;
   for (size_t i = 0; i < specs.size(); ++i) {
@@ -945,7 +1030,7 @@ ResultSet Engine::exec_select(const Statement& stmt) {
   // Eligibility depends on the index *definition*, not on whether the graph is
   // already materialized: the graph is built lazily on first use.
   const bool ann_eligible =
-      mode_ == QueryMode::Ann && table.meta.has_vector_index &&
+      mode_ == QueryMode::Ann && table.meta.has_vector_index && vector_index_fits(table) &&
       table.meta.vector_column >= 0 && stmt.has_limit && stmt.limit > 0 &&
       dist_slot >= 0 && sort_keys.size() == 1 && sort_keys[0].out_index == dist_slot &&
       sort_keys[0].asc;
@@ -1002,7 +1087,15 @@ ResultSet Engine::exec_select(const Statement& stmt) {
       ef = target;
     }
     timings_.ann_ef_total += ef;
-    if (hits.size() >= k) {
+    bool cutoff_tie = false;
+    if (hits.size() >= k && hits.size() < table.pk_index->size()) {
+      std::vector<double> distances;
+      for (const auto& hit : hits) distances.push_back(hit.distance);
+      std::sort(distances.begin(), distances.end());
+      cutoff_tie = (k > 1 && distances[k-1] == distances[k-2]) ||
+                   (k < distances.size() && distances[k-1] == distances[k]);
+    }
+    if (hits.size() >= k && !cutoff_tie) {
       for (const VectorIndex::Hit& hit : hits) {
         RID rid = 0;
         if (!table.pk_index->search(hit.pk, rid)) continue;
@@ -1042,7 +1135,7 @@ ResultSet Engine::exec_select(const Statement& stmt) {
     const std::vector<float>& query = specs[static_cast<size_t>(dist_slot)].query;
     const size_t dim = query.size();
     std::vector<std::pair<double, int64_t>> top;  // max-heap: worst kept entry on top
-    top.reserve(limit + 1);
+    top.reserve(std::min(limit, static_cast<size_t>(table.pk_index->size())));
     auto consider = [&](double distance, int64_t pk) {
       const auto entry = std::make_pair(distance, pk);
       if (top.size() < limit) {
@@ -1151,6 +1244,8 @@ ResultSet Engine::exec_select(const Statement& stmt) {
   }
 
   if (!used_ann && !used_fast) table.heap->scan([&](RID rid, std::string_view bytes) {
+    if (stmt.has_limit && (stmt.limit == 0 ||
+        (sort_keys.empty() && out_rows.size() >= static_cast<size_t>(stmt.limit)))) return;
     ++timings_.rows_scanned;
     std::vector<Value> row;
     if (!decode_row(meta, bytes, row)) return;
@@ -1169,7 +1264,18 @@ ResultSet Engine::exec_select(const Statement& stmt) {
       }
     }
     for (size_t column : extra_columns) out.extras.push_back(row[column]);
-    out_rows.push_back(std::move(out));
+    if (stmt.has_limit && !sort_keys.empty()) {
+      if (out_rows.size() < static_cast<size_t>(stmt.limit)) {
+        out_rows.push_back(std::move(out));
+        std::push_heap(out_rows.begin(), out_rows.end(), row_less);
+      } else if (row_less(out, out_rows.front())) {
+        std::pop_heap(out_rows.begin(), out_rows.end(), row_less);
+        out_rows.back() = std::move(out);
+        std::push_heap(out_rows.begin(), out_rows.end(), row_less);
+      }
+    } else {
+      out_rows.push_back(std::move(out));
+    }
   });
   if (!used_ann && !used_fast) {
     timings_.select_scan_ms +=
@@ -1179,18 +1285,7 @@ ResultSet Engine::exec_select(const Statement& stmt) {
   ++timings_.queries;
 
   if (!sort_keys.empty()) {
-    std::stable_sort(out_rows.begin(), out_rows.end(), [&](const OutRow& a, const OutRow& b) {
-      for (const SortKeySpec& key : sort_keys) {
-        const Value& va = key.out_index >= 0 ? a.raw[static_cast<size_t>(key.out_index)]
-                                             : a.extras[static_cast<size_t>(key.extra_index)];
-        const Value& vb = key.out_index >= 0 ? b.raw[static_cast<size_t>(key.out_index)]
-                                             : b.extras[static_cast<size_t>(key.extra_index)];
-        int cmp = compare_values(va, vb);
-        if (!key.asc) cmp = -cmp;
-        if (cmp != 0) return cmp < 0;
-      }
-      return a.pk < b.pk;
-    });
+    std::sort(out_rows.begin(), out_rows.end(), row_less);
   }
 
   if (stmt.has_limit) {
@@ -1261,32 +1356,33 @@ std::string Engine::format_value(const Value& value, ColumnType type) const {
   return std::string();
 }
 
-void Engine::drop_table(uint32_t table_id) {
+void Engine::drop_table(uint32_t table_id, bool remove_files) {
   auto it = tables_.find(table_id);
   if (it == tables_.end()) return;
   by_name_.erase(lower(it->second->meta.name));
   if (it->second->heap) {
     it->second->heap->close();
-    ::unlink(heap_path(table_id).c_str());
+    if (remove_files) ::unlink(heap_path(table_id).c_str());
   }
   if (it->second->pk_index) {
     it->second->pk_index->close();
-    ::unlink(btree_path(table_id).c_str());
+    if (remove_files) ::unlink(btree_path(table_id).c_str());
   }
   tables_.erase(it);
 }
 
 void Engine::rollback_to(size_t mark) {
-  for (size_t i = undo_.size(); i > mark; --i) {
-    const UndoOp& op = undo_[i - 1];
+  while (undo_.size() > mark) {
+    const UndoOp op = undo_.back();
     auto it = tables_.find(op.table_id);
-    if (it == tables_.end()) continue;
+    if (it == tables_.end()) { undo_.pop_back(); continue; }
     TableState& table = *it->second;
     if (op.kind == UndoOp::Kind::CreatedVectorIndex) {
       table.meta.has_vector_index = false;
       table.meta.vector_column = -1;
       table.vec_index.reset();
       table.vec_dirty = false;
+      undo_.pop_back();
       continue;
     }
     invalidate_cache(table);
@@ -1312,10 +1408,11 @@ void Engine::rollback_to(size_t mark) {
       case UndoOp::Kind::CreatedTable:
         drop_table(op.table_id);
         break;
+      case UndoOp::Kind::CreatedVectorIndex:
+        break;  // handled above
     }
+    undo_.pop_back();
   }
-  undo_.resize(mark);
-  save_catalog();
 }
 
 bool Engine::checkpoint() {
@@ -1336,13 +1433,17 @@ bool Engine::flush_all() {
   return ok;
 }
 
-bool Engine::save_catalog() {
+std::vector<TableMeta> Engine::catalog_tables() const {
   std::vector<TableMeta> metas;
   metas.reserve(tables_.size());
   for (const auto& entry : tables_) metas.push_back(entry.second->meta);
   std::sort(metas.begin(), metas.end(),
             [](const TableMeta& a, const TableMeta& b) { return a.id < b.id; });
-  return ::mvdb::save_catalog(catalog_path_, metas, next_table_id_);
+  return metas;
+}
+
+bool Engine::save_catalog() {
+  return ::mvdb::save_catalog(catalog_path_, catalog_tables(), next_table_id_);
 }
 
 void Engine::begin_txn_scope() {
@@ -1365,36 +1466,45 @@ void Engine::release_current_txn() {
 void Engine::commit_txn() {
   if (current_txn_ == 0) return;
   const auto started = std::chrono::steady_clock::now();
-  std::vector<std::pair<uint32_t, BufferPool::DirtyPage>> pages;
-  for (auto& entry : tables_) {
-    const uint32_t table_id = entry.first;
-    if (entry.second->heap) {
-      for (auto& dirty : entry.second->heap->collect_dirty(current_txn_)) {
-        pages.emplace_back(table_id * 2, dirty);
-      }
-    }
-    if (entry.second->pk_index) {
-      for (auto& dirty : entry.second->pk_index->collect_dirty(current_txn_)) {
-        pages.emplace_back(table_id * 2 + 1, dirty);
-      }
-    }
-  }
+  size_t page_count = 0;
   bool ok = true;
-  for (auto& item : pages) {
-    const uint64_t lsn = wal_.allocate_lsn();
-    item.second.page->set_lsn(lsn);
-    ok = ok && wal_.log_page_image(current_txn_, item.first, item.second.page_id, lsn,
-                                   item.second.page->raw(), Page::kPageSize);
-    if (!ok) break;
+  for (auto& entry : tables_) {
+    const auto log_page = [&](uint32_t file_tag, uint32_t page_id, Page& page) {
+      if (!ok) return;
+      const uint64_t lsn = wal_.allocate_lsn();
+      page.set_lsn(lsn);
+      ok = wal_.log_page_image(current_txn_, file_tag, page_id, lsn, page.raw(), Page::kPageSize);
+      ++page_count;
+    };
+    entry.second->heap->visit_dirty(current_txn_, [&](uint32_t id, Page& page) {
+      log_page(entry.first * 2, id, page);
+    });
+    entry.second->pk_index->visit_dirty(current_txn_, [&](uint32_t id, Page& page) {
+      log_page(entry.first * 2 + 1, id, page);
+    });
+  }
+  if (ok && catalog_dirty_) {
+    ok = wal_.log_catalog_image(current_txn_, encode_catalog(catalog_tables(), next_table_id_));
   }
   ok = ok && wal_.log_commit(current_txn_) && wal_.sync();
+  if (!ok) throw std::system_error(EIO, std::generic_category(), "write-ahead log failure");
+  if (catalog_dirty_) {
+    if (!save_catalog()) throw std::system_error(EIO, std::generic_category(), "cannot persist committed catalog");
+    catalog_dirty_ = false;
+  }
+  // Files become unreachable only after their catalog removal is committed.
+  for (uint32_t id : dropped_tables_) {
+    ::unlink(heap_path(id).c_str());
+    ::unlink(btree_path(id).c_str());
+  }
+  dropped_tables_.clear();
   release_current_txn();
-  const size_t written = pages.size() * (Page::kPageSize + 40) + 40;
+  const size_t written = page_count * (Page::kPageSize + 40) + 40;
   timings_.wal_bytes += written;
   wal_bytes_since_checkpoint_ += written;
   timings_.commit_ms +=
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-  if (!ok) throw_sql_error(kErrInternal, "write-ahead log failure");
+  if (!ok) throw std::system_error(EIO, std::generic_category(), "write-ahead log failure");
   // Bound log growth: once the log is large, make every page durable and reset
   // it. Cheap relative to the number of commits that trigger it.
   if (wal_bytes_since_checkpoint_ >= checkpoint_threshold_) checkpoint();
@@ -1417,7 +1527,7 @@ bool pwrite_all(int fd, const char* data, size_t len, off_t offset) {
 
 }  // namespace
 
-bool Engine::recover(const std::vector<TableMeta>& metas, std::string& error) {
+bool Engine::recover(std::vector<TableMeta>& metas, std::string& error) {
   std::set<uint64_t> committed;
   if (!wal_.scan([&](const Wal::Record& record) {
         if (record.type == Wal::Type::kCommit) committed.insert(record.txid);
@@ -1433,12 +1543,31 @@ bool Engine::recover(const std::vector<TableMeta>& metas, std::string& error) {
     return true;
   }
 
+  // Install the last committed schema before deciding which page images exist.
+  // Repeatable if recovery itself is killed after the catalog rename.
+  std::string catalog_image;
+  if (!wal_.scan([&](const Wal::Record& record) {
+        if (record.type == Wal::Type::kCatalogImage && committed.count(record.txid)) {
+          catalog_image.assign(record.payload, record.payload_len);
+        }
+        return true;
+      })) {
+    error = "cannot read catalog log";
+    return false;
+  }
+  if (!catalog_image.empty()) {
+    if (!decode_catalog(catalog_image, metas, next_table_id_) ||
+        !::mvdb::save_catalog(catalog_path_, metas, next_table_id_)) {
+      error = "cannot recover catalog";
+      return false;
+    }
+  }
   std::set<uint32_t> known_tables;
   for (const TableMeta& meta : metas) known_tables.insert(meta.id);
   std::map<uint32_t, int> fds;  // file tag -> descriptor, -1 after a failure
 
   bool ok = true;
-  wal_.scan([&](const Wal::Record& record) {
+  const bool scanned = wal_.scan([&](const Wal::Record& record) {
     if (!ok) return false;
     if (record.type != Wal::Type::kPageImage) return true;
     if (committed.count(record.txid) == 0) return true;
@@ -1452,7 +1581,7 @@ bool Engine::recover(const std::vector<TableMeta>& metas, std::string& error) {
       it = fds.emplace(record.file_tag, fd).first;
     }
     const int fd = it->second;
-    if (fd < 0) return true;
+    if (fd < 0) { ok = false; return false; }
     const off_t offset = static_cast<off_t>(record.page_id) * static_cast<off_t>(Page::kPageSize);
     uint64_t on_disk_lsn = 0;
     if (::pread(fd, &on_disk_lsn, sizeof(on_disk_lsn), offset + 8) ==
@@ -1468,15 +1597,15 @@ bool Engine::recover(const std::vector<TableMeta>& metas, std::string& error) {
 
   for (auto& entry : fds) {
     if (entry.second >= 0) {
-      ::fdatasync(entry.second);
+      if (::fdatasync(entry.second) != 0) ok = false;
       ::close(entry.second);
     }
   }
-  if (!ok) {
+  if (!ok || !scanned) {
     error = "cannot apply write-ahead log";
     return false;
   }
-  wal_.truncate();
+  if (!wal_.truncate()) { error = "cannot checkpoint recovered log"; return false; }
   return true;
 }
 
@@ -1498,7 +1627,9 @@ ResultSet Engine::execute(const Statement& stmt) {
     case Statement::Kind::Rollback:
       if (in_txn_) {
         rollback_to(0);
-        release_current_txn();
+        // Undo may relocate rows and change multiple heap/index pages. Log
+        // the restored state before releasing pages or acknowledging rollback.
+        commit_txn();
         undo_.clear();
         in_txn_ = false;
       }
@@ -1531,9 +1662,15 @@ ResultSet Engine::execute(const Statement& stmt) {
       undo_.clear();
     }
     return rs;
+  } catch (const std::system_error&) {
+    throw;
+  } catch (const std::bad_alloc&) {
+    throw;
   } catch (...) {
     rollback_to(mark);
-    if (implicit) release_current_txn();
+    // A failed autocommit statement may also have relocated rows during undo.
+    // Persist its restored physical layout just like an explicit rollback.
+    if (implicit) commit_txn();
     throw;
   }
 }

@@ -6,6 +6,8 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <system_error>
+#include <new>
 
 #include "exec/engine.h"
 #include "protocol/json.h"
@@ -136,6 +138,12 @@ bool handle_statement(std::string_view raw, mvdb::Engine& engine, mvdb::OutputWr
                    static_cast<long long>(rs.affected_rows));
     }
     writer.write_result(rs);
+  } catch (const std::system_error& ex) {
+    std::fprintf(stderr, "fatal storage error: %s\n", ex.what());
+    std::_Exit(1);
+  } catch (const std::bad_alloc&) {
+    std::fprintf(stderr, "fatal allocation failure\n");
+    std::_Exit(1);
   } catch (const mvdb::SqlError& err) {
     if (opts.probe) {
       std::fprintf(stderr, "[probe] error: %d %s\n", err.code, err.message.c_str());
@@ -163,7 +171,7 @@ int run_protocol_loop(mvdb::Engine& engine, mvdb::OutputWriter& writer) {
     }
     const mvdb::JsonValue* id = request.find("id");
     const std::string id_text =
-        (id != nullptr && id->type == mvdb::JsonValue::Type::Number) ? id->text : std::string("null");
+        id != nullptr ? line.substr(id->source_begin, id->source_length) : std::string("null");
     const mvdb::JsonValue* op = request.find("op");
     const std::string op_name = (op != nullptr && op->is_string()) ? mvdb::to_lower(op->text) : "";
 
@@ -185,14 +193,20 @@ int run_protocol_loop(mvdb::Engine& engine, mvdb::OutputWriter& writer) {
       continue;
     }
     const mvdb::JsonValue* mode = request.find("search_mode");
-    if (mode != nullptr && mode->is_string()) {
-      const std::string value = mvdb::to_lower(mode->text);
-      if (value == "ann") {
-        engine.set_mode(mvdb::Engine::QueryMode::Ann);
-      } else if (value == "exact") {
-        engine.set_mode(mvdb::Engine::QueryMode::Exact);
+    // search_mode belongs to this request; omission always means exact.
+    std::string request_mode = "exact";
+    if (mode != nullptr) {
+      if (!mode->is_string() ||
+          (mode->text != "ann" && mode->text != "exact")) {
+        writer.write_error_response(id_text,
+            mvdb::SqlError{mvdb::kErrIncorrectValue, "invalid search_mode"});
+        writer.flush();
+        continue;
       }
+      request_mode = mode->text;
     }
+    engine.set_mode(request_mode == "ann" ? mvdb::Engine::QueryMode::Ann
+                                           : mvdb::Engine::QueryMode::Exact);
     std::string text = mvdb::trim(sql->text);
     while (!text.empty() && (text.back() == ';' || text.back() == ' ')) {
       text.pop_back();
@@ -208,6 +222,12 @@ int run_protocol_loop(mvdb::Engine& engine, mvdb::OutputWriter& writer) {
       writer.write_response(id_text, rs);
     } catch (const mvdb::SqlError& err) {
       writer.write_error_response(id_text, err);
+    } catch (const std::system_error& ex) {
+      std::fprintf(stderr, "fatal storage error: %s\n", ex.what());
+      std::_Exit(1);
+    } catch (const std::bad_alloc&) {
+      std::fprintf(stderr, "fatal allocation failure\n");
+      std::_Exit(1);
     } catch (const std::exception& ex) {
       writer.write_error_response(id_text, mvdb::SqlError{mvdb::kErrInternal, ex.what()});
     }

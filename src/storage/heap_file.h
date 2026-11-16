@@ -47,11 +47,15 @@ class HeapFile {
   void set_current_txn(uint64_t txid);
   void release_txn(uint64_t txid);
   std::vector<BufferPool::DirtyPage> collect_dirty(uint64_t txid);
+  void visit_dirty(uint64_t txid, const std::function<void(uint32_t, Page&)>& visitor);
 
 
  private:
   bool ensure_capacity(uint32_t upto_page);
   RID insert_into(uint32_t page_id, const std::string& record);
+  RID insert_overflow(const std::string& record);
+  bool read_overflow(uint32_t first, std::string& out);
+  void free_overflow(uint32_t first);
   void try_evict();
 
   std::string path_;
@@ -62,6 +66,8 @@ class HeapFile {
   // Pages that may still have room because rows were deleted from them. Bounded
   // probing here replaces an earlier full-file backscan that made inserts O(n^2).
   std::set<uint32_t> spare_pages_;
+  // Reserved overflow pages never participate in ordinary slotted allocation.
+  std::set<uint32_t> free_overflow_pages_;
   std::unique_ptr<BufferPool> pool_;
 };
 

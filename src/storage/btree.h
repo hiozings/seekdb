@@ -46,6 +46,7 @@ class BTree {
   void set_current_txn(uint64_t txid);
   void release_txn(uint64_t txid);
   std::vector<BufferPool::DirtyPage> collect_dirty(uint64_t txid);
+  void visit_dirty(uint64_t txid, const std::function<void(uint32_t, Page&)>& visitor);
 
  private:
   struct Split {

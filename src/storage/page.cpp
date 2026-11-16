@@ -51,8 +51,8 @@ void Page::wr32(size_t off, uint32_t value) { std::memcpy(data_ + off, &value, s
 uint32_t Page::slot_count() const { return rd16(0); }
 
 bool Page::live(uint16_t slot) const {
-  if (slot >= slot_count()) return false;
-  return rd16(kHeaderSize + static_cast<size_t>(slot) * 4 + 2) != 0;
+  if (is_overflow_page() || slot >= slot_count()) return false;
+  return (rd16(kHeaderSize + static_cast<size_t>(slot) * 4 + 2) & 0x7FFFu) != 0;
 }
 
 bool Page::has_dead_slot(size_t& slot) const {
@@ -69,11 +69,39 @@ std::string_view Page::get(uint16_t slot) const {
   if (!live(slot)) return {};
   const size_t base = kHeaderSize + static_cast<size_t>(slot) * 4;
   const uint16_t offset = rd16(base);
-  const uint16_t len = rd16(base + 2);
+  const uint16_t len = rd16(base + 2) & 0x7FFFu;
   return std::string_view(data_ + offset, len);
 }
 
+bool Page::is_overflow(uint16_t slot) const {
+  return live(slot) && (rd16(kHeaderSize + static_cast<size_t>(slot) * 4 + 2) & 0x8000u);
+}
+
+void Page::set_overflow(uint16_t slot) {
+  const size_t offset = kHeaderSize + static_cast<size_t>(slot) * 4 + 2;
+  wr16(offset, rd16(offset) | 0x8000u);
+}
+
+bool Page::is_overflow_page() const { return (rd16(6) & 1u) != 0; }
+
+void Page::set_overflow_page(uint32_t next, std::string_view chunk) {
+  reset();
+  wr16(6, 1);
+  wr32(16, next);
+  wr32(20, static_cast<uint32_t>(chunk.size()));
+  if (!chunk.empty()) std::memcpy(data_ + kHeaderSize, chunk.data(), chunk.size());
+}
+
+uint32_t Page::overflow_next() const { return rd32(16); }
+
+std::string_view Page::overflow_chunk() const {
+  const size_t length = rd32(20);
+  if (!is_overflow_page() || length > kPageSize - kHeaderSize) return {};
+  return std::string_view(data_ + kHeaderSize, length);
+}
+
 bool Page::insert(const std::string& record, uint16_t& slot_out) {
+  if (is_overflow_page()) return false;
   const size_t len = record.size();
   size_t reuse = 0;
   const bool has_reuse = has_dead_slot(reuse);
@@ -112,9 +140,9 @@ bool Page::erase(uint16_t slot) {
 }
 
 bool Page::rewrite(uint16_t slot, const std::string& record) {
-  if (!live(slot)) return false;
+  if (!live(slot) || is_overflow(slot)) return false;
   const size_t base = kHeaderSize + static_cast<size_t>(slot) * 4;
-  if (record.size() > rd16(base + 2)) return false;
+  if (record.size() > (rd16(base + 2) & 0x7FFFu)) return false;
   const size_t offset = rd16(base);
   std::memcpy(data_ + offset, record.data(), record.size());
   wr16(base + 2, static_cast<uint16_t>(record.size()));
@@ -122,6 +150,7 @@ bool Page::rewrite(uint16_t slot, const std::string& record) {
 }
 
 bool Page::can_fit(size_t len) const {
+  if (is_overflow_page()) return false;
   size_t dead = 0;
   const bool has_reuse = has_dead_slot(dead);
   const size_t slot_overhead = has_reuse ? 0 : 4;
@@ -132,11 +161,13 @@ bool Page::can_fit(size_t len) const {
 void Page::compact() {
   std::vector<std::string> records;
   std::vector<uint16_t> slots;
+  std::vector<bool> overflow;
   for (uint16_t i = 0; i < slot_count(); ++i) {
     if (!live(i)) continue;
     std::string_view view = get(i);
     records.emplace_back(view.data(), view.size());
     slots.push_back(i);
+    overflow.push_back(is_overflow(i));
   }
   size_t end = kPageSize;
   for (size_t k = 0; k < records.size(); ++k) {
@@ -144,7 +175,7 @@ void Page::compact() {
     std::memcpy(data_ + end, records[k].data(), records[k].size());
     const size_t base = kHeaderSize + static_cast<size_t>(slots[k]) * 4;
     wr16(base, static_cast<uint16_t>(end));
-    wr16(base + 2, static_cast<uint16_t>(records[k].size()));
+    wr16(base + 2, static_cast<uint16_t>(records[k].size()) | (overflow[k] ? 0x8000u : 0));
   }
   set_free_end(end);
   // Dead slots were already zeroed by erase(); compaction keeps their indices.

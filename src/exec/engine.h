@@ -10,6 +10,7 @@
 #include "storage/page.h"
 #include "storage/schema.h"
 #include "txn/wal.h"
+#include "txn/undo_log.h"
 
 namespace mvdb {
 
@@ -104,6 +105,7 @@ class Engine {
   struct ColumnBitmaps {
     bool valid = false;
     int column = -1;
+    bool disabled = false;
     std::vector<uint64_t> words;                      // rows rounded up to 64
     std::unordered_map<int64_t, std::vector<uint64_t>> int_values;
     std::unordered_map<std::string, std::vector<uint64_t>> str_values;
@@ -120,18 +122,12 @@ class Engine {
     ColumnBitmaps bitmaps;
   };
 
-  struct UndoOp {
-    enum class Kind { InsertedRow, DeletedRow, UpdatedRow, CreatedTable, CreatedVectorIndex } kind;
-    uint32_t table_id = 0;
-    int64_t pk = 0;
-    RID rid = 0;
-    std::string record;
-  };
+  using UndoOp = UndoLog::Entry;
 
   TableState& require_table(const std::string& name);
   const TableState& require_table(const std::string& name) const;
   size_t require_column(const TableMeta& meta, const std::string& name) const;
-  Value coerce(const TableMeta& meta, size_t column_index, const Value& input) const;
+  Value coerce(const TableMeta& meta, size_t column_index, const Value& input, bool check_length = true) const;
   bool matches(const TableMeta& meta, const std::vector<Value>& row,
                const std::vector<Condition>& conds) const;
   std::vector<PreparedCondition> prepare_filter(const TableMeta& meta,
@@ -160,8 +156,10 @@ class Engine {
   ResultSet exec_drop_table(const Statement& stmt);
   ResultSet exec_set_mode(const Statement& stmt);
   void build_vector_index(TableState& table);
+  size_t vector_index_bytes(const TableState& table) const;
+  bool vector_index_fits(const TableState& table) const;
   void invalidate_cache(TableState& table) {
-    table.cache.valid = false;
+    table.cache = ScanCache{};
     table.bitmaps = ColumnBitmaps{};
   }
   void ensure_scan_cache(TableState& table, int vector_column);
@@ -174,11 +172,14 @@ class Engine {
   void begin_txn_scope();
   void release_current_txn();
   void commit_txn();
-  bool recover(const std::vector<TableMeta>& metas, std::string& error);
-  void drop_table(uint32_t table_id);
+  bool recover(std::vector<TableMeta>& metas, std::string& error);
+  void drop_table(uint32_t table_id, bool remove_files = true);
   bool flush_all();
   bool checkpoint();
   bool save_catalog();
+  std::vector<TableMeta> catalog_tables() const;
+  bool catalog_dirty_ = false;
+  std::vector<uint32_t> dropped_tables_;
   std::string heap_path(uint32_t table_id) const;
   std::string btree_path(uint32_t table_id) const;
 
@@ -192,7 +193,7 @@ class Engine {
   uint32_t next_table_id_ = 1;
   std::map<uint32_t, std::unique_ptr<TableState>> tables_;
   std::map<std::string, uint32_t> by_name_;
-  std::vector<UndoOp> undo_;
+  UndoLog undo_;
   Wal wal_;
   uint64_t next_txid_ = 1;
   uint64_t current_txn_ = 0;

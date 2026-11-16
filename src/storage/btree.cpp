@@ -145,7 +145,7 @@ bool BTree::open() {
   struct stat st {};
   if (::fstat(fd_, &st) != 0) return false;
   page_count_ = static_cast<uint32_t>(st.st_size / static_cast<off_t>(Page::kPageSize));
-  pool_ = std::make_unique<BufferPool>(fd_, pool_pages_);
+  pool_ = std::make_unique<BufferPool>(fd_, pool_pages_, path_);
   if (page_count_ == 0) {
     alloc_page();  // meta page 0
     root_ = alloc_page();
@@ -202,6 +202,10 @@ void BTree::set_current_txn(uint64_t txid) {
 
 void BTree::release_txn(uint64_t txid) {
   if (pool_) pool_->release_txn(txid);
+}
+
+void BTree::visit_dirty(uint64_t txid, const std::function<void(uint32_t, Page&)>& visitor) {
+  if (pool_) pool_->visit_dirty(txid, visitor);
 }
 
 std::vector<BufferPool::DirtyPage> BTree::collect_dirty(uint64_t txid) {
