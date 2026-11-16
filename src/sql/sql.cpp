@@ -416,13 +416,15 @@ class Parser {
     }
     if (peek().kind == TokenKind::IntLit) {
       int64_t value = 0;
-      if (!parse_int64(peek().text, value)) {
-        throw_sql_error(kErrOutOfRange, "invalid integer literal '" + std::string(peek().text) + "'");
+      // Parse the sign together with the magnitude so INT64_MIN is valid.
+      const std::string signed_text = negative ? "-" + std::string(peek().text) : std::string(peek().text);
+      if (!parse_int64(signed_text, value)) {
+        throw_sql_error(kErrOutOfRange, "invalid integer literal '" + signed_text + "'");
       }
       advance();
       Value v;
       v.kind = Value::Kind::Int;
-      v.i = negative ? -value : value;
+      v.i = value;
       return v;
     }
     if (peek().kind == TokenKind::FloatLit) {

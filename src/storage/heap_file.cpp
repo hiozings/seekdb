@@ -106,9 +106,14 @@ RID HeapFile::update(RID rid, const std::string& record) {
     pool_->mark_dirty(page);
     return rid;
   }
+  // Preserve the old row if allocation fails (including oversized records).
+  // Keep the page pinned while insert may compact it or allocate another page.
+  const RID replacement = insert(record);
+  if (replacement == kInvalidRid) return kInvalidRid;
   page->erase(rid_slot(rid));
   pool_->mark_dirty(page);
-  return insert(record);
+  spare_pages_.insert(page_id);
+  return replacement;
 }
 
 void HeapFile::scan(const std::function<void(RID, std::string_view)>& fn) {

@@ -54,9 +54,12 @@ __attribute__((target("avx2,fma"))) double l2_exact_avx2(const float* a, const f
   for (; i + 8 <= n; i += 8) {
     const __m256 va = _mm256_loadu_ps(a + i);
     const __m256 vb = _mm256_loadu_ps(b + i);
-    const __m256 diff = _mm256_sub_ps(va, vb);
-    const __m256d lo = _mm256_cvtps_pd(_mm256_castps256_ps128(diff));
-    const __m256d hi = _mm256_cvtps_pd(_mm256_extractf128_ps(diff, 1));
+    // Widen before subtraction: two finite float32 values can have a
+    // difference outside float32 range, even though it fits in double.
+    const __m256d lo = _mm256_sub_pd(_mm256_cvtps_pd(_mm256_castps256_ps128(va)),
+                                    _mm256_cvtps_pd(_mm256_castps256_ps128(vb)));
+    const __m256d hi = _mm256_sub_pd(_mm256_cvtps_pd(_mm256_extractf128_ps(va, 1)),
+                                    _mm256_cvtps_pd(_mm256_extractf128_ps(vb, 1)));
     acc0 = _mm256_fmadd_pd(lo, lo, acc0);
     acc1 = _mm256_fmadd_pd(hi, hi, acc1);
   }

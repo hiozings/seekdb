@@ -77,6 +77,8 @@ class Session:
             self.proc.stdin.close()
             code = self.proc.wait(timeout=30)
             self.last_stderr = self.proc.stderr.read() or ""
+            self.proc.stdout.close()
+            self.proc.stderr.close()
             if code != 0:
                 raise ProtocolError(f"process exited with {code} after shutdown")
         self.proc = None
@@ -101,6 +103,9 @@ class Session:
             if self.proc is not None:
                 self.proc.kill()
                 self.proc.wait()
+                for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
+                    if stream is not None:
+                        stream.close()
         self.proc = None
 
 

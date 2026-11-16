@@ -33,7 +33,8 @@ class HeapFile {
   // Copies the record bytes into `out`; returns false when the RID is dead.
   bool read(RID rid, std::string& out);
   bool erase(RID rid);
-  // Rewrites in place when the new record fits, otherwise erases and reinserts.
+  // Rewrites in place when possible, otherwise inserts before erasing the old
+  // row. An invalid RID leaves the old row intact.
   RID update(RID rid, const std::string& record);
 
   // Streams every live record. The callback must copy anything it retains.

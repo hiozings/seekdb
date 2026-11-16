@@ -37,6 +37,10 @@ double value_as_double(const Value& v) {
 }
 
 int compare_values(const Value& a, const Value& b) {
+  // BIGINT comparisons must not round adjacent values through double.
+  if (a.kind == Value::Kind::Int && b.kind == Value::Kind::Int) {
+    return a.i < b.i ? -1 : (a.i > b.i ? 1 : 0);
+  }
   if (value_is_numeric(a) && value_is_numeric(b)) {
     const double x = value_as_double(a);
     const double y = value_as_double(b);
@@ -1288,13 +1292,19 @@ void Engine::rollback_to(size_t mark) {
     invalidate_cache(table);
     if (table.vec_index) table.vec_dirty = true;
     switch (op.kind) {
-      case UndoOp::Kind::InsertedRow:
-        table.heap->erase(op.rid);
+      case UndoOp::Kind::InsertedRow: {
+        // Later undo operations may have restored this key at a new RID.
+        RID current = kInvalidRid;
+        if (table.pk_index->search(op.pk, current)) table.heap->erase(current);
         table.pk_index->erase(op.pk);
         break;
+      }
       case UndoOp::Kind::DeletedRow:
       case UndoOp::Kind::UpdatedRow: {
-        if (op.kind == UndoOp::Kind::UpdatedRow) table.heap->erase(op.rid);
+        if (op.kind == UndoOp::Kind::UpdatedRow) {
+          RID current = kInvalidRid;
+          if (table.pk_index->search(op.pk, current)) table.heap->erase(current);
+        }
         const RID restored = table.heap->insert(op.record);
         if (restored != kInvalidRid) table.pk_index->insert(op.pk, restored);
         break;
