@@ -83,11 +83,13 @@ def split_statements(text: str) -> list[str]:
 
 def run_case_protocol(binary: Path, statements: list[str]) -> list[dict]:
     data_dir = Path(tempfile.mkdtemp(prefix="mvdb-case-"))
-    session = Session(binary, data_dir)
+    session = None
     try:
+        session = Session(binary, data_dir)
         return [to_assertion(session.execute(statement)) for statement in statements]
     finally:
-        session.close()
+        if session is not None:
+            session.close()
         shutil.rmtree(data_dir, ignore_errors=True)
 
 
@@ -104,9 +106,10 @@ def first_diff(expected: str, actual: str) -> str:
 
 def run_case(binary: Path, case: Path, env: dict[str, str], keep: bool) -> str:
     data_dir = Path(tempfile.mkdtemp(prefix="mvdb-case-"))
-    session = Session(binary, data_dir)
+    session = None
     results: list[dict] = []
     try:
+        session = Session(binary, data_dir, env=env)
         chunks = [case.read_text(encoding="utf-8")]
         if case.suffix == ".restart":
             text = chunks[0]
@@ -122,7 +125,8 @@ def run_case(binary: Path, case: Path, env: dict[str, str], keep: bool) -> str:
                 results.append(to_assertion(session.execute(statement)))
         return normalize("\n".join(json.dumps(r, ensure_ascii=False) for r in results))
     finally:
-        session.close()
+        if session is not None:
+            session.close()
         if not keep:
             shutil.rmtree(data_dir, ignore_errors=True)
 

@@ -13,6 +13,21 @@ BINARY = Path(__file__).resolve().parents[2] / 'build/minivectordb'
 
 
 class VectorEdges(unittest.TestCase):
+    def test_finite_decimal_underflow_rounds_to_float32_zero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session=Session(BINARY,Path(directory))
+            try:
+                self.assertIs(session.execute('CREATE TABLE t(id BIGINT PRIMARY KEY,v VECTOR(2))')['ok'],True)
+                for ident,literal in enumerate(("'[1e-400,-1e-400]'",'[1e-400,-1e-400]',"'[1e-100,-1e-100]'")):
+                    result=session.execute(f'INSERT INTO t VALUES({ident},{literal})')
+                    self.assertIs(result.get('ok'),True,result)
+                result=session.execute("SELECT id,L2_DISTANCE(v,'[1e-400,-1e-400]') AS d FROM t ORDER BY d")
+                self.assertEqual(result.get('rows'),[[0,0],[1,0],[2,0]])
+                self.assertIs(session.execute("INSERT INTO t VALUES(3,'[1e400,0]')")['ok'],False)
+                self.assertEqual(session.execute('SELECT id FROM t ORDER BY id')['rows'],[[0],[1],[2]])
+            finally:
+                session.close()
+
     def test_page_scan_handles_unaligned_vectors(self):
         # A wide declared VARCHAR disables the optional cache. Variable byte
         # lengths put vectors at unaligned offsets in real encoded heap rows.

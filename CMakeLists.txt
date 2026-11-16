@@ -69,12 +69,14 @@ if(MVDB_BUILD_TESTS)
   )
   target_include_directories(hnsw_test PRIVATE src)
   target_link_libraries(hnsw_test PRIVATE Threads::Threads)
+  add_library(interrupt_page_write SHARED tests/crash/interrupt_page_write.cpp)
+  target_link_libraries(interrupt_page_write PRIVATE ${CMAKE_DL_LIBS})
   enable_testing()
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   add_test(NAME buffer_pool_spill COMMAND buffer_pool_spill_test)
   add_test(NAME btree COMMAND btree_test)
   add_test(NAME hnsw COMMAND hnsw_test)
-  foreach(suite correctness_regressions sql_protocol_edges vector_edges large_rows)
+  foreach(suite correctness_regressions sql_protocol_edges vector_edges large_rows filtered_ann ann_distributions)
     add_test(NAME ${suite}
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/conformance/test_${suite}.py
               --bin $<TARGET_FILE:minivectordb>)
@@ -88,13 +90,27 @@ if(MVDB_BUILD_TESTS)
   add_test(NAME requirements
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/official/requirements_check.py
             $<TARGET_FILE:minivectordb>)
+  add_test(NAME interrupted_recovery
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/crash/test_interrupted_recovery.py
+            --bin $<TARGET_FILE:minivectordb> --fault-library $<TARGET_FILE:interrupt_page_write>)
+  set_tests_properties(interrupted_recovery PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" TIMEOUT 180)
+  add_test(NAME transaction_model
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/crash/model_audit.py
+            --bin $<TARGET_FILE:minivectordb> --seeds 2)
+  foreach(model query_model cache_page_model)
+    add_test(NAME ${model}
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/conformance/${model}_audit.py
+              --bin $<TARGET_FILE:minivectordb>)
+  endforeach()
+  set_tests_properties(transaction_model query_model cache_page_model
+    PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" TIMEOUT 180)
   add_test(NAME crash_recovery
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/crash/kill_test.py
             --bin $<TARGET_FILE:minivectordb> --trials 20)
   add_test(NAME large_dataset
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/storage/large_dataset.py
             --bin $<TARGET_FILE:minivectordb> --rows 100000 --dim 128)
-  set_tests_properties(correctness_regressions sql_protocol_edges vector_edges large_rows
+  set_tests_properties(correctness_regressions sql_protocol_edges vector_edges large_rows filtered_ann ann_distributions
     conformance public_cases requirements crash_recovery large_dataset
     PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1" TIMEOUT 600)
 endif()

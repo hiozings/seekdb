@@ -562,6 +562,9 @@ std::vector<PreparedCondition> Engine::prepare_filter(const TableMeta& meta,
   out.reserve(conds.size());
   for (const Condition& cond : conds) {
     const size_t idx = require_column(meta, cond.column);
+    if (meta.columns[idx].type == ColumnType::Vector) {
+      throw_sql_error(kErrNotSupported, "VECTOR comparisons require a distance expression");
+    }
     out.push_back(PreparedCondition{idx, cond.op, coerce(meta, idx, cond.literal, false)});
   }
   return out;
@@ -649,7 +652,8 @@ bool Engine::raw_row_matches(const std::vector<PreparedCondition>& prepared,
         cmp = 1;
       }
     } else {
-      const uint32_t len = *reinterpret_cast<const uint32_t*>(at - sizeof(uint32_t));
+      uint32_t len = 0;
+      std::memcpy(&len, at - sizeof(uint32_t), sizeof(len));
       const std::string& expected = cond.value.s;
       const size_t common = std::min<size_t>(len, expected.size());
       cmp = std::memcmp(at, expected.data(), common);
@@ -993,6 +997,12 @@ ResultSet Engine::exec_select(const Statement& stmt) {
         spec.extra_index = static_cast<int>(it - extra_columns.begin());
       }
     }
+    const bool distance_key = spec.out_index >= 0 && specs[static_cast<size_t>(spec.out_index)].is_distance;
+    const size_t column = spec.out_index >= 0 ? specs[static_cast<size_t>(spec.out_index)].table_index
+                                            : extra_columns[static_cast<size_t>(spec.extra_index)];
+    if (!distance_key && meta.columns[column].type == ColumnType::Vector) {
+      throw_sql_error(kErrNotSupported, "ORDER BY VECTOR requires a distance expression");
+    }
     sort_keys.push_back(spec);
   }
 
@@ -1030,7 +1040,10 @@ ResultSet Engine::exec_select(const Statement& stmt) {
   // Eligibility depends on the index *definition*, not on whether the graph is
   // already materialized: the graph is built lazily on first use.
   const bool ann_eligible =
-      mode_ == QueryMode::Ann && table.meta.has_vector_index && vector_index_fits(table) &&
+      // A bounded global candidate list cannot certify recall inside an
+      // arbitrary filter. Filtered requests use the exact Top-K scan below.
+      mode_ == QueryMode::Ann && prepared.empty() &&
+      table.meta.has_vector_index && vector_index_fits(table) &&
       table.meta.vector_column >= 0 && stmt.has_limit && stmt.limit > 0 &&
       dist_slot >= 0 && sort_keys.size() == 1 && sort_keys[0].out_index == dist_slot &&
       sort_keys[0].asc;
@@ -1583,11 +1596,9 @@ bool Engine::recover(std::vector<TableMeta>& metas, std::string& error) {
     const int fd = it->second;
     if (fd < 0) { ok = false; return false; }
     const off_t offset = static_cast<off_t>(record.page_id) * static_cast<off_t>(Page::kPageSize);
-    uint64_t on_disk_lsn = 0;
-    if (::pread(fd, &on_disk_lsn, sizeof(on_disk_lsn), offset + 8) ==
-        static_cast<ssize_t>(sizeof(on_disk_lsn))) {
-      if (on_disk_lsn >= record.lsn) return true;  // idempotent replay
-    }
+    // A short/interrupted page write can persist its LSN before the rest of
+    // the image. Reapply committed full images in log order: trusting only
+    // the header would skip a torn page on the next recovery attempt.
     if (!pwrite_all(fd, record.payload, record.payload_len, offset)) {
       ok = false;
       return false;

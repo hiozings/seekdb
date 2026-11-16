@@ -61,8 +61,10 @@ def build_load_sql(table_rows: list[tuple[int, str, np.ndarray]], batch: int = 1
 
 
 def truth_topk(matrix: np.ndarray, ids: np.ndarray, query: np.ndarray, mask: np.ndarray, k: int):
-    diff = matrix[mask] - query
-    dist = np.sqrt((diff.astype(np.float64) ** 2).sum(axis=1))
+    # Widen stored float32 operands before subtracting, just like Euclidean
+    # distance over their exact stored values (not a float32 intermediate).
+    diff = matrix[mask].astype(np.float64) - query.astype(np.float64)
+    dist = np.sqrt((diff ** 2).sum(axis=1))
     sub_ids = ids[mask]
     order = np.lexsort((sub_ids, dist))  # distance first, then id ascending
     return sub_ids[order[:k]]

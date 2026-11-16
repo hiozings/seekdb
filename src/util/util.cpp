@@ -3,6 +3,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 
@@ -126,7 +127,16 @@ bool parse_double(std::string_view s, double& out) {
   if (first == last) return false;
   double value = 0.0;
   auto res = std::from_chars(first, last, value, std::chars_format::general);
-  if (res.ec != std::errc() || res.ptr != last) return false;
+  if (res.ptr != last) return false;
+  if (res.ec == std::errc::result_out_of_range) {
+    // from_chars reports both overflow and underflow. Finite underflow is a
+    // valid conversion (ultimately zero for float32), unlike overflow to inf.
+    char* end = nullptr;
+    value = std::strtod(t.c_str(), &end);
+    if (end != t.c_str() + t.size() || !std::isfinite(value)) return false;
+  } else if (res.ec != std::errc()) {
+    return false;
+  }
   out = value;
   return true;
 }

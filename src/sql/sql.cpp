@@ -249,7 +249,11 @@ std::vector<float> parse_vector_text(std::string_view text) {
     const char* last = inner.data() + inner.size();
     double value = 0.0;
     const auto result = std::from_chars(first, last, value, std::chars_format::general);
-    if (result.ec != std::errc() || result.ptr == first) {
+    if (result.ec == std::errc::result_out_of_range && result.ptr != first) {
+      if (!parse_double(std::string_view(first, static_cast<size_t>(result.ptr - first)), value)) {
+        throw_sql_error(kErrVectorOverflow, "value out of float32 range in vector literal");
+      }
+    } else if (result.ec != std::errc() || result.ptr == first) {
       throw_sql_error(kErrIncorrectValue,
                       "invalid number in vector literal: " + std::string(inner.substr(i, 16)));
     }
@@ -583,6 +587,7 @@ class Parser {
     expect_kw("into");
     stmt.table = expect_ident("a table name");
     if (accept(TokenKind::LParen)) {
+      if (peek().kind == TokenKind::RParen) syntax_error("empty INSERT column list");
       if (peek().kind != TokenKind::RParen) {
         while (true) {
           stmt.insert_columns.push_back(expect_ident("a column name"));

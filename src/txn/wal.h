@@ -17,8 +17,8 @@ namespace mvdb {
 // therefore only has to replay committed images; there is nothing to undo.
 //
 // Images carry a page LSN that is monotonic across restarts (epoch << 48 |
-// counter), so replaying a log twice, or replaying after a crash during
-// recovery, converges to the same state.
+// counter). Recovery reapplies committed full images in log order, including
+// images whose LSN is already visible in a potentially incomplete page write.
 class Wal {
  public:
   enum class Type : uint8_t {

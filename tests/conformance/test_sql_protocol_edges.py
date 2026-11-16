@@ -62,6 +62,38 @@ class SqlProtocolEdges(unittest.TestCase):
                 self.assertIs(response.get('ok'), False, response)
                 self.execute(sql)
 
+    def test_explicit_empty_insert_columns_rejected_atomically(self):
+        self.execute('CREATE TABLE t(id BIGINT PRIMARY KEY,v VECTOR(1))')
+        self.execute('BEGIN')
+        self.execute("INSERT INTO t VALUES(1,'[1]')")
+        response=self.session.execute("INSERT INTO t () VALUES(2,'[0]')")
+        self.assertIs(response.get('ok'),False,response)
+        self.execute('COMMIT')
+        self.session.restart()
+        self.assertEqual(self.execute('SELECT id FROM t ORDER BY id')['rows'],[[1]])
+
+    def test_unsupported_vector_comparisons_rejected_before_scanning(self):
+        self.execute('CREATE TABLE t(id BIGINT PRIMARY KEY,v VECTOR(1))')
+        for count in range(3):
+            for sql in ("SELECT id FROM t WHERE v='[1]'", 'SELECT id FROM t ORDER BY v',
+                        "SELECT id FROM t WHERE v>'[0]' ORDER BY L2_DISTANCE(v,'[0]') LIMIT 1",
+                        "UPDATE t SET v='[2]' WHERE v='[1]'", "DELETE FROM t WHERE v='[1]'"):
+                with self.subTest(rows=count,sql=sql):
+                    response=self.session.execute(sql)
+                    self.assertIs(response.get('ok'),False,response)
+                    self.assertEqual(response['error']['code'],'unsupported_sql')
+            self.assertEqual(self.execute('SELECT * FROM t ORDER BY id')['rows'],[[i,[1]] for i in range(count)])
+            self.execute(f"INSERT INTO t VALUES({count},'[1]')")
+
+    def test_driver_environment_override_reaches_child(self):
+        import subprocess
+        driver=Path(__file__).with_name('driver.py')
+        result=subprocess.run([sys.executable,str(driver),'--bin',str(BINARY),'--filter','m0_basic',
+            '--env','MVDB_FORMAT=text','--env','MVDB_READY=env-override-sentinel'],
+            capture_output=True,text=True,timeout=20)
+        self.assertNotEqual(result.returncode,0,'driver silently ignored --env')
+        self.assertIn('ready line is not JSON',result.stdout)
+
     def test_literal_projection_preserves_json_types(self):
         self.assertEqual(self.execute("SELECT 1 AS n, 1.5 AS f, '1' AS s")['rows'], [[1,1.5,'1']])
 

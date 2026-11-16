@@ -163,8 +163,20 @@ def run_trial(binary: Path, seed: int, verbose: bool) -> list[str]:
         if window and len(window) != 20:
             failures.append(f"seed={seed}: partially applied commit window: {len(window)}/20 rows")
 
-        # Phase 5: kill during recovery, then recover again on the next start.
-        # Replay must be idempotent.
+        # Phase 5: leave an acknowledged transaction in WAL before interrupting
+        # recovery. query_ids above shuts down normally and clears the old WAL.
+        session = Session(binary, data_dir)
+        session.send("BEGIN")
+        recovery_ids = list(range(4000, 4040))
+        for i in recovery_ids:
+            session.send(f"INSERT INTO t VALUES ({i}, 'recovery')")
+        session.send("COMMIT")
+        session.kill()
+        expected_after_recovery = sorted(ids + recovery_ids)
+        if (data_dir / "wal.log").stat().st_size == 0:
+            failures.append(f"seed={seed}: interrupted recovery setup has no WAL")
+        # The first attempt has pending redo; later attempts may have already
+        # finished it. The short-write injection suite pins an in-replay crash.
         for attempt in range(3):
             proc = subprocess.Popen(
                 [str(binary), "--data-dir", str(data_dir)],
@@ -179,6 +191,8 @@ def run_trial(binary: Path, seed: int, verbose: bool) -> list[str]:
         ids = query_ids(binary, data_dir)
         if ids != sorted(set(ids)):
             failures.append(f"seed={seed}: duplicated rows after repeated recovery")
+        if ids != expected_after_recovery:
+            failures.append(f"seed={seed}: acknowledged state changed after interrupted recovery")
 
         if verbose:
             print(f"  seed={seed}: {len(ids)} rows, {len(failures)} failure(s)")

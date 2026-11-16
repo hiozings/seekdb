@@ -18,10 +18,12 @@ class ProtocolError(RuntimeError):
 
 
 class Session:
-    def __init__(self, binary: Path, data_dir: Path, extra_args: list[str] | None = None):
+    def __init__(self, binary: Path, data_dir: Path, extra_args: list[str] | None = None,
+                 env: dict[str, str] | None = None):
         self.binary = binary
         self.data_dir = data_dir
         self.extra_args = extra_args or []
+        self.env = None if env is None else env.copy()
         self.proc: subprocess.Popen | None = None
         self.next_id = 1
         self.start()
@@ -34,16 +36,26 @@ class Session:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            env=self.env,
         )
-        line = self.proc.stdout.readline()
-        if not line:
-            raise ProtocolError("process exited before the ready handshake")
         try:
-            hello = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise ProtocolError(f"ready line is not JSON: {line!r} ({exc})") from exc
-        if hello != {"type": "ready"}:
-            raise ProtocolError(f"unexpected ready object: {hello!r}")
+            line = self.proc.stdout.readline()
+            if not line:
+                raise ProtocolError("process exited before the ready handshake")
+            try:
+                hello = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ProtocolError(f"ready line is not JSON: {line!r} ({exc})") from exc
+            if hello != {"type": "ready"}:
+                raise ProtocolError(f"unexpected ready object: {hello!r}")
+        except BaseException:
+            if self.proc.poll() is None:
+                self.proc.kill()
+            self.proc.wait(timeout=10)
+            for stream in (self.proc.stdin,self.proc.stdout,self.proc.stderr):
+                stream.close()
+            self.proc = None
+            raise
 
     def _send(self, payload: dict) -> dict:
         assert self.proc is not None and self.proc.stdin and self.proc.stdout

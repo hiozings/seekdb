@@ -153,7 +153,8 @@ void VectorIndex::connect(int node, int neighbor, int level) {
   links.push_back(neighbor);
   if (links.size() <= static_cast<size_t>(m_)) return;
 
-  // Keep the m_ closest neighbours; ties fall back to node id for determinism.
+  // Retain diverse routes when pruning reciprocal links, just as for new
+  // nodes. Nearest-only pruning disconnects dense clusters from each other.
   const Node& self = nodes_[node];
   std::vector<std::pair<double, int>> scored;
   scored.reserve(links.size());
@@ -163,10 +164,7 @@ void VectorIndex::connect(int node, int neighbor, int level) {
         candidate);
   }
   std::sort(scored.begin(), scored.end());
-  links.clear();
-  for (size_t i = 0; i < scored.size() && i < static_cast<size_t>(m_); ++i) {
-    links.push_back(scored[i].second);
-  }
+  links = select_neighbors(scored, static_cast<size_t>(m_));
 }
 
 void VectorIndex::add(int64_t pk, const std::vector<float>& vec, std::vector<Value> row) {
