@@ -217,6 +217,29 @@ class CorrectnessRegressions(unittest.TestCase):
         self.session.start()
         self.assertEqual(self.rows('SELECT * FROM t ORDER BY id'), [[1]])
 
+    def test_primary_key_candidates_do_not_scan_the_table(self):
+        import re
+        self.session.close()
+        self.session.extra_args=['--stats']
+        self.session.start()
+        self.execute('CREATE TABLE t(s VARCHAR(8),id BIGINT PRIMARY KEY,v VECTOR(1))')
+        for start in range(0,5000,100):
+            self.execute('INSERT INTO t VALUES '+','.join(f"('old',{i},'[1]')" for i in range(start,start+100)))
+        self.execute('BEGIN')
+        self.assertEqual(self.execute("UPDATE t SET s='new' WHERE id=4999")['affected_rows'],1)
+        self.assertEqual(self.execute('DELETE FROM t WHERE id=4998')['affected_rows'],1)
+        self.assertEqual(self.rows('SELECT id,s FROM t WHERE id=4999'),[[4999,'new']])
+        self.assertEqual(self.rows("SELECT id FROM t WHERE id=4999 AND s='absent'"),[])
+        self.assertEqual(self.rows('SELECT id FROM t WHERE id=4998'),[])
+        self.assertEqual(self.rows("SELECT id FROM t WHERE id=4999 ORDER BY L2_DISTANCE(v,'[0]') LIMIT 1"),[[4999]])
+        self.execute('ROLLBACK')
+        self.assertEqual(self.rows('SELECT id,s FROM t WHERE id=4999'),[[4999,'old']])
+        self.assertEqual(self.rows('SELECT id FROM t WHERE id=4998'),[[4998]])
+        self.session.close()
+        match=re.search(r'rows_scanned=(\d+)',self.session.last_stderr)
+        self.assertIsNotNone(match,self.session.last_stderr)
+        self.assertEqual(int(match.group(1)),5,'PK equality must inspect only its candidate row')
+
     def test_bigint_minimum_and_overflow(self):
         self.execute('CREATE TABLE t (id BIGINT PRIMARY KEY, n BIGINT)')
         self.execute('INSERT INTO t VALUES (1,-9223372036854775808)')

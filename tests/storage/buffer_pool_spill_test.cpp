@@ -7,6 +7,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -126,6 +127,49 @@ void bounded_spill_streaming_and_publication() {
   }
 }
 
+uint64_t process_written_bytes() {
+  std::ifstream input("/proc/self/io");
+  std::string name;
+  uint64_t value = 0;
+  while (input >> name >> value) if (name == "wchar:") return value;
+  throw std::runtime_error("cannot read process write counter");
+}
+
+void lsn_updates_do_not_rewrite_spilled_payload() {
+  DataFile file;
+  seed(file, 40);
+  BufferPool pool(file.fd, 4, file.path);
+  pool.set_current_txn(6);
+  modify(pool, 40);
+  const uint64_t before = process_written_bytes();
+  uint32_t next_spilled = 0;
+  pool.visit_dirty(6, [&](uint32_t id, Page& page) {
+    if (id < 36) require(id == next_spilled++, "spilled pages were not streamed sequentially");
+    page.set_lsn(5000 + id);
+  });
+  require(next_spilled == 36, "sequential stream missed spilled pages");
+  require(process_written_bytes() == before, "LSN-only logging rewrote spilled page payloads");
+  {
+    auto reloaded = pool.fetch(0);
+    require(reloaded->lsn() == 5000, "reloaded spill lost LSN-only change");
+  }
+  pool.visit_dirty(6, [](uint32_t id, Page& page) {
+    require(page.lsn() == 5000 + id, "second visit lost LSN-only change");
+    page.raw()[6] = 0x55;
+    page.raw()[101] = 'Z';
+    page.set_lsn(9000 + id);
+  });
+  check_original(file, 40);
+  pool.release_txn(6);
+  require(pool.sync(), "sync after mixed LSN/payload changes");
+  pool.clear();
+  for (uint32_t id = 0; id < 40; ++id) {
+    auto page = pool.fetch(id);
+    require(page->lsn() == 9000 + id && page->raw()[101] == 'Z' && page->raw()[6] == 0x55,
+            "mixed visitor changes were not published");
+  }
+}
+
 void pinned_pages_and_compatibility_handles() {
   DataFile file;
   BufferPool pool(file.fd, 4, file.path);
@@ -231,6 +275,7 @@ void killed_transaction_never_publishes() {
 
 int main() {
   try {
+    lsn_updates_do_not_rewrite_spilled_payload();
     bounded_spill_streaming_and_publication();
     pinned_pages_and_compatibility_handles();
     io_failures_preserve_pending_state();

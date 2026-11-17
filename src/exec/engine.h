@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -55,6 +56,10 @@ class Engine {
     double select_scan_ms = 0.0;
     double select_ann_ms = 0.0;
     double commit_ms = 0.0;
+    double wal_prepare_ms = 0.0;
+    double wal_sync_ms = 0.0;
+    double spill_publish_ms = 0.0;
+    double checkpoint_ms = 0.0;
     double index_build_ms = 0.0;
     uint64_t rows_scanned = 0;
     uint64_t queries = 0;
@@ -132,6 +137,10 @@ class Engine {
                const std::vector<Condition>& conds) const;
   std::vector<PreparedCondition> prepare_filter(const TableMeta& meta,
                                                 const std::vector<Condition>& conds) const;
+  // Restrict a primary-key equality to its indexed candidate; the caller
+  // still evaluates all prepared conditions, including contradictory ones.
+  void scan_candidates(TableState& table, const std::vector<PreparedCondition>& prepared,
+                       const std::function<void(RID, std::string_view)>& visit);
   bool matches_prepared(const std::vector<PreparedCondition>& prepared,
                         const std::vector<Value>& row) const;
 

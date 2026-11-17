@@ -3,6 +3,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 
+#include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cstring>
 #include <filesystem>
@@ -46,7 +48,7 @@ void BufferPool::spill(uint32_t page_id, const Page& page) {
   if (!write_page(spill_fd_, page_id, page)) {
     throw std::system_error(errno, std::generic_category(), "write transaction spill");
   }
-  spilled_[page_id] = page.owner_txn();
+  spilled_[page_id] = SpilledPage{page.owner_txn(), page.lsn()};
 }
 
 bool BufferPool::read_page(int fd, uint32_t page_id, Page& page) {
@@ -124,7 +126,8 @@ std::shared_ptr<Page> BufferPool::fetch(uint32_t page_id) {
     throw std::system_error(errno, std::generic_category(), "read cached page");
   }
   if (spilled != spilled_.end()) {
-    page->set_owner_txn(spilled->second);
+    page->set_owner_txn(spilled->second.owner_txn);
+    page->set_lsn(spilled->second.lsn);
     page->set_dirty(true);
   }
   frames_.emplace(page_id, Frame{page, ++tick_});
@@ -143,7 +146,7 @@ std::vector<BufferPool::DirtyPage> BufferPool::collect_dirty(uint64_t txid) {
   // use visit_dirty instead to keep their working set bounded.
   std::vector<uint32_t> ids;
   for (const auto& entry : spilled_) {
-    if (entry.second == txid) ids.push_back(entry.first);
+    if (entry.second.owner_txn == txid) ids.push_back(entry.first);
   }
   for (const auto& entry : frames_) {
     if (entry.second.page->dirty() && entry.second.page->owner_txn() == txid) {
@@ -156,20 +159,42 @@ std::vector<BufferPool::DirtyPage> BufferPool::collect_dirty(uint64_t txid) {
   return out;
 }
 
+std::vector<uint32_t> BufferPool::spilled_page_ids(uint64_t txid) const {
+  std::vector<uint32_t> ids;
+  ids.reserve(spilled_.size());
+  for (const auto& entry : spilled_) {
+    if (entry.second.owner_txn == txid && frames_.count(entry.first) == 0) ids.push_back(entry.first);
+  }
+  // Sequential offsets let the OS read ahead instead of issuing scattered
+  // small reads when a transaction is larger than available page cache.
+  std::sort(ids.begin(), ids.end());
+  return ids;
+}
+
 void BufferPool::visit_dirty(uint64_t txid,
                              const std::function<void(uint32_t, Page&)>& visitor) {
-  for (const auto& entry : spilled_) {
-    if (entry.second != txid || frames_.count(entry.first) != 0) continue;
+  for (uint32_t id : spilled_page_ids(txid)) {
+    auto& pending = spilled_.at(id);
     Page page;
-    if (!read_page(spill_fd_, entry.first, page)) {
+    if (!read_page(spill_fd_, id, page)) {
       throw std::system_error(errno, std::generic_category(), "read transaction spill");
     }
     page.set_owner_txn(txid);
     page.set_dirty(true);
-    visitor(entry.first, page);
-    if (!write_page(spill_fd_, entry.first, page)) {
-      throw std::system_error(errno, std::generic_category(), "update transaction spill");
+    page.set_lsn(pending.lsn);
+    std::array<char, Page::kPageSize> before;
+    std::memcpy(before.data(), page.raw(), before.size());
+    visitor(id, page);
+    // Commit normally changes only bytes [8,16), the LSN. Retain that small
+    // change in memory instead of rewriting every spilled page before publish.
+    // Other visitor changes still retain the original write-back semantics.
+    if (std::memcmp(before.data(), page.raw(), 8) != 0 ||
+        std::memcmp(before.data() + 16, page.raw() + 16, Page::kPageSize - 16) != 0) {
+      if (!write_page(spill_fd_, id, page)) {
+        throw std::system_error(errno, std::generic_category(), "update transaction spill");
+      }
     }
+    pending.lsn = page.lsn();
   }
   for (auto& entry : frames_) {
     if (entry.second.page->dirty() && entry.second.page->owner_txn() == txid) {
@@ -181,15 +206,19 @@ void BufferPool::visit_dirty(uint64_t txid,
 void BufferPool::release_txn(uint64_t txid) {
   // WAL must already be durable, making partially completed publication safe
   // to recover. Retain all ownership if a data write fails.
-  for (const auto& entry : spilled_) {
-    if (entry.second != txid || frames_.count(entry.first) != 0) continue;
+  for (uint32_t id : spilled_page_ids(txid)) {
+    const auto& pending = spilled_.at(id);
     Page page;
-    if (!read_page(spill_fd_, entry.first, page) || !write_page(fd_, entry.first, page)) {
+    if (!read_page(spill_fd_, id, page)) {
+      throw std::system_error(errno, std::generic_category(), "read transaction spill for publication");
+    }
+    page.set_lsn(pending.lsn);
+    if (!write_page(fd_, id, page)) {
       throw std::system_error(errno, std::generic_category(), "publish transaction spill");
     }
   }
   for (auto it = spilled_.begin(); it != spilled_.end();) {
-    if (it->second == txid) it = spilled_.erase(it);
+    if (it->second.owner_txn == txid) it = spilled_.erase(it);
     else ++it;
   }
   for (auto& entry : frames_) {

@@ -59,6 +59,8 @@ void print_timings(const mvdb::Engine& engine) {
                t.ann_queries ? static_cast<double>(t.ann_ef_total) / static_cast<double>(t.ann_queries)
                              : 0.0,
                t.select_scan_ms, t.select_ann_ms, t.commit_ms, t.index_build_ms);
+  std::fprintf(stderr, "[stats] wal_prepare_ms=%.1f wal_sync_ms=%.1f spill_publish_ms=%.1f checkpoint_ms=%.1f\n",
+               t.wal_prepare_ms, t.wal_sync_ms, t.spill_publish_ms, t.checkpoint_ms);
   std::fprintf(stderr, "[stats] insert_encode_ms=%.1f insert_heap_ms=%.1f insert_index_ms=%.1f\n",
                t.insert_encode_ms, t.insert_heap_ms, t.insert_index_ms);
   std::fprintf(stderr, "[stats] parse_ms=%.1f cache_scans=%llu page_scans=%llu\n", t.parse_ms,

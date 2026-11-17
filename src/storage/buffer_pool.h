@@ -61,13 +61,18 @@ class BufferPool {
   // Returns false when every cached page is pinned by a caller.
   bool evict_one();
 
+  std::vector<uint32_t> spilled_page_ids(uint64_t txid) const;
   void spill(uint32_t page_id, const Page& page);
   void close_spill() noexcept;
 
   int fd_;
   std::string data_path_;
   int spill_fd_ = -1;
-  std::unordered_map<uint32_t, uint64_t> spilled_;
+  struct SpilledPage {
+    uint64_t owner_txn = 0;
+    uint64_t lsn = 0;  // may be newer than the private on-disk image header
+  };
+  std::unordered_map<uint32_t, SpilledPage> spilled_;
   size_t capacity_;
   uint64_t tick_ = 0;
   uint64_t current_txn_ = 0;

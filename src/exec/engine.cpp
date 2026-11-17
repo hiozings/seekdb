@@ -570,6 +570,24 @@ std::vector<PreparedCondition> Engine::prepare_filter(const TableMeta& meta,
   return out;
 }
 
+void Engine::scan_candidates(TableState& table, const std::vector<PreparedCondition>& prepared,
+                             const std::function<void(RID, std::string_view)>& visit) {
+  for (const auto& condition : prepared) {
+    if (condition.column == table.meta.pk_index && condition.op == Condition::Op::Eq) {
+      RID rid = kInvalidRid;
+      if (table.pk_index->search(condition.value.i, rid)) {
+        std::string record;
+        if (!table.heap->read(rid, record)) {
+          throw_sql_error(kErrInternal, "primary-key index points to a missing row");
+        }
+        visit(rid, record);
+      }
+      return;
+    }
+  }
+  table.heap->scan(visit);
+}
+
 bool Engine::matches_prepared(const std::vector<PreparedCondition>& prepared,
                               const std::vector<Value>& row) const {
   for (const PreparedCondition& cond : prepared) {
@@ -815,7 +833,7 @@ ResultSet Engine::exec_delete(const Statement& stmt) {
   RecordSpool victims(data_dir_);
   const auto prepared = stmt.has_where ? prepare_filter(table.meta, stmt.where)
                                        : std::vector<PreparedCondition>{};
-  table.heap->scan([&](RID rid, std::string_view bytes) {
+  scan_candidates(table, prepared, [&](RID rid, std::string_view bytes) {
     std::vector<Value> row;
     if (!decode_row(table.meta, bytes, row)) return;
     if (!matches_prepared(prepared, row)) return;
@@ -861,7 +879,7 @@ ResultSet Engine::exec_update(const Statement& stmt) {
   RecordSpool targets(data_dir_);
   const auto prepared = stmt.has_where ? prepare_filter(table.meta, stmt.where)
                                        : std::vector<PreparedCondition>{};
-  table.heap->scan([&](RID rid, std::string_view bytes) {
+  scan_candidates(table, prepared, [&](RID rid, std::string_view bytes) {
     std::vector<Value> row;
     if (!decode_row(table.meta, bytes, row)) return;
     if (!matches_prepared(prepared, row)) return;
@@ -1008,6 +1026,9 @@ ResultSet Engine::exec_select(const Statement& stmt) {
 
   const std::vector<PreparedCondition> prepared =
       stmt.has_where ? prepare_filter(meta, stmt.where) : std::vector<PreparedCondition>{};
+  const bool point_lookup = std::any_of(prepared.begin(), prepared.end(), [&](const auto& condition) {
+    return condition.column == meta.pk_index && condition.op == Condition::Op::Eq;
+  });
 
   struct OutRow {
     std::vector<Value> raw;
@@ -1138,7 +1159,7 @@ ResultSet Engine::exec_select(const Statement& stmt) {
   // Allocation-free Top-K: walk the encoded rows, keep a bounded heap, and only
   // decode the k rows that survive. The general path below decodes every row,
   // which at 10k x 128 costs more than the distance arithmetic itself.
-  const bool topk_shape = dist_slot >= 0 && stmt.has_limit && stmt.limit > 0 &&
+  const bool topk_shape = !point_lookup && dist_slot >= 0 && stmt.has_limit && stmt.limit > 0 &&
                           sort_keys.size() == 1 && sort_keys[0].out_index == dist_slot &&
                           sort_keys[0].asc;
   bool used_fast = false;
@@ -1256,7 +1277,8 @@ ResultSet Engine::exec_select(const Statement& stmt) {
             .count();
   }
 
-  if (!used_ann && !used_fast) table.heap->scan([&](RID rid, std::string_view bytes) {
+  if (!used_ann && !used_fast && (!stmt.has_limit || stmt.limit != 0))
+    scan_candidates(table, prepared, [&](RID rid, std::string_view bytes) {
     if (stmt.has_limit && (stmt.limit == 0 ||
         (sort_keys.empty() && out_rows.size() >= static_cast<size_t>(stmt.limit)))) return;
     ++timings_.rows_scanned;
@@ -1499,7 +1521,10 @@ void Engine::commit_txn() {
   if (ok && catalog_dirty_) {
     ok = wal_.log_catalog_image(current_txn_, encode_catalog(catalog_tables(), next_table_id_));
   }
+  const auto sync_started = std::chrono::steady_clock::now();
+  timings_.wal_prepare_ms += std::chrono::duration<double, std::milli>(sync_started - started).count();
   ok = ok && wal_.log_commit(current_txn_) && wal_.sync();
+  timings_.wal_sync_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sync_started).count();
   if (!ok) throw std::system_error(EIO, std::generic_category(), "write-ahead log failure");
   if (catalog_dirty_) {
     if (!save_catalog()) throw std::system_error(EIO, std::generic_category(), "cannot persist committed catalog");
@@ -1511,7 +1536,9 @@ void Engine::commit_txn() {
     ::unlink(btree_path(id).c_str());
   }
   dropped_tables_.clear();
+  const auto publish_started = std::chrono::steady_clock::now();
   release_current_txn();
+  timings_.spill_publish_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - publish_started).count();
   const size_t written = page_count * (Page::kPageSize + 40) + 40;
   timings_.wal_bytes += written;
   wal_bytes_since_checkpoint_ += written;
@@ -1520,7 +1547,11 @@ void Engine::commit_txn() {
   if (!ok) throw std::system_error(EIO, std::generic_category(), "write-ahead log failure");
   // Bound log growth: once the log is large, make every page durable and reset
   // it. Cheap relative to the number of commits that trigger it.
-  if (wal_bytes_since_checkpoint_ >= checkpoint_threshold_) checkpoint();
+  if (wal_bytes_since_checkpoint_ >= checkpoint_threshold_) {
+    const auto checkpoint_started = std::chrono::steady_clock::now();
+    checkpoint();
+    timings_.checkpoint_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - checkpoint_started).count();
+  }
 }
 
 namespace {

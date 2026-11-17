@@ -41,6 +41,8 @@ find_package(Threads REQUIRED)
 target_link_libraries(minivectordb PRIVATE Threads::Threads)
 
 if(MVDB_BUILD_TESTS)
+  add_executable(crc32_test tests/storage/crc32_test.cpp)
+  target_include_directories(crc32_test PRIVATE src)
   add_executable(buffer_pool_spill_test
     tests/storage/buffer_pool_spill_test.cpp
     src/storage/buffer_pool.cpp
@@ -72,6 +74,7 @@ if(MVDB_BUILD_TESTS)
   add_library(interrupt_page_write SHARED tests/crash/interrupt_page_write.cpp)
   target_link_libraries(interrupt_page_write PRIVATE ${CMAKE_DL_LIBS})
   enable_testing()
+  add_test(NAME crc32 COMMAND crc32_test)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   add_test(NAME buffer_pool_spill COMMAND buffer_pool_spill_test)
   add_test(NAME btree COMMAND btree_test)
