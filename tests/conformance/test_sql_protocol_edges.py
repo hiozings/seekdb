@@ -28,6 +28,29 @@ class SqlProtocolEdges(unittest.TestCase):
         self.session.proc.stdin.flush()
         return json.loads(self.session.proc.stdout.readline())
 
+    def test_ann_after_undo_reuses_index(self):
+        self.execute('CREATE TABLE t(id BIGINT PRIMARY KEY,g BIGINT,v VECTOR(1))')
+        self.execute("INSERT INTO t VALUES (1,1,'[1]'),(2,2,'[2]'),(3,3,'[3]')")
+        self.execute('CREATE VECTOR INDEX vi ON t(v)')
+        query = "SELECT id,g FROM t ORDER BY L2_DISTANCE(v,'[0]') LIMIT 3"
+        for _ in range(2):
+            self.execute('BEGIN')
+            self.execute("UPDATE t SET v='[4]',g=4 WHERE id=1")
+            self.execute('DELETE FROM t WHERE id=2')
+            self.execute("INSERT INTO t VALUES(2,0,'[0]')")
+            self.assertEqual(self.session.execute(query, 'ann')['rows'], [[2,0],[3,3],[1,4]])
+            self.execute('ROLLBACK')
+            self.assertEqual(self.session.execute(query, 'ann')['rows'], [[1,1],[2,2],[3,3]])
+        self.session.close()
+        self.assertRegex(self.session.last_stderr, r'\bindex_builds=1\b')
+
+    def test_terminator_before_comment(self):
+        self.execute("CREATE TABLE t(id BIGINT PRIMARY KEY,s VARCHAR(16)); -- ddl")
+        self.execute("INSERT INTO t VALUES(1,'; -- text'); /* done */")
+        self.assertEqual(self.execute('SELECT s FROM t; -- read')['rows'], [['; -- text']])
+        self.assertFalse(self.session.execute("DELETE FROM t; SELECT 1")['ok'])
+        self.assertEqual(self.execute("SELECT id FROM t")['rows'], [[1]])
+
     def test_malformed_json_numbers_cannot_execute(self):
         invalid = ['-', '1e', '1..2', '01', '-01', '1.', '1e+', '1e-', '1+2']
         for i, number in enumerate(invalid):

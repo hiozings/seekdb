@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 #include <string>
@@ -13,8 +14,7 @@ namespace mvdb {
 // On-disk B+tree mapping BIGINT primary keys to row identifiers.
 //
 // Page 0 is the meta page; every other page is a leaf or internal node. Leaves
-// store (key, rid) pairs and are chained through `next` (reserved for range
-// scans). Internal nodes store `count` separator keys and `count + 1` children.
+// store (key, rid) pairs. Internal nodes store `count` separator keys and `count + 1` children.
 //
 // Deletes remove the key from its leaf but do not merge nodes; lookups stay
 // correct because routing only needs `rightmost child with separator <= key`.
@@ -30,6 +30,9 @@ class BTree {
   void close();
 
   bool search(int64_t key, RID& rid);
+  // Inclusive bounds; visiting stops when the callback returns false.
+  void scan_range(int64_t low, int64_t high, bool ascending,
+                  const std::function<bool(RID)>& visit);
   // Inserts the key, or replaces its RID when it already exists.
   bool insert(int64_t key, RID rid);
   bool erase(int64_t key);

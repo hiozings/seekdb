@@ -24,13 +24,16 @@ class RecordSpool {
   size_t size() const { return count_; }
   void append(std::string_view record) {
     open();
-    seek(end_);
+    // A seek on an output stream flushes stdio. Consecutive appends already
+    // have the correct position, including data still in the stdio buffer.
+    if (!appending_) seek(end_);
     const uint64_t len = record.size();
     write(&len, sizeof(len));
     write(record.data(), record.size());
     write(&len, sizeof(len));
     end_ += record.size() + 2 * sizeof(len);
     ++count_;
+    appending_ = true;
   }
   std::string back() {
     if (count_ == 0) throw std::system_error(errno ? errno : EIO, std::generic_category(), "empty temporary log");
@@ -52,6 +55,7 @@ class RecordSpool {
   void clear() {
     if (file_) { std::fclose(file_); file_ = nullptr; }
     end_ = 0;
+    appending_ = false;
     count_ = 0;
   }
   template <typename Fn> void for_each(Fn fn) {
@@ -78,6 +82,7 @@ class RecordSpool {
     if (!file_) { ::close(fd); throw std::system_error(errno ? errno : EIO, std::generic_category(), "cannot open temporary record file"); }
   }
   void seek(uint64_t pos) {
+    appending_ = false;
     if (::fseeko(file_, static_cast<off_t>(pos), SEEK_SET) != 0)
       throw std::system_error(errno ? errno : EIO, std::generic_category(), "cannot seek temporary record file");
   }
@@ -92,6 +97,7 @@ class RecordSpool {
   std::string directory_;
   FILE* file_ = nullptr;
   uint64_t end_ = 0;
+  bool appending_ = false;
   size_t count_ = 0;
 };
 

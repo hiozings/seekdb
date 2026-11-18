@@ -151,7 +151,11 @@ void VectorIndex::connect(int node, int neighbor, int level) {
   auto& links = nodes_[node].links[static_cast<size_t>(level)];
   if (std::find(links.begin(), links.end(), neighbor) != links.end()) return;
   links.push_back(neighbor);
-  if (links.size() <= static_cast<size_t>(m_)) return;
+  // Level zero receives most reciprocal links. Allow up to 2M neighbors
+  // there, then prune back to M in one pass instead of rescoring M+1
+  // neighbors for every new link to a popular node.
+  const size_t capacity = static_cast<size_t>(m_) * (level == 0 ? 2 : 1);
+  if (links.size() <= capacity) return;
 
   // Retain diverse routes when pruning reciprocal links, just as for new
   // nodes. Nearest-only pruning disconnects dense clusters from each other.
@@ -170,7 +174,12 @@ void VectorIndex::connect(int node, int neighbor, int level) {
 void VectorIndex::add(int64_t pk, const std::vector<float>& vec, std::vector<Value> row) {
   auto existing = current_.find(pk);
   if (existing != current_.end()) {
-    nodes_[static_cast<size_t>(existing->second)].deleted = true;
+    Node& node = nodes_[static_cast<size_t>(existing->second)];
+    if (node.vec == vec) {
+      node.row = std::move(row);
+      return;
+    }
+    node.deleted = true;
     ++tombstones_;
     current_.erase(existing);
   }

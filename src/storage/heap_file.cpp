@@ -225,6 +225,13 @@ RID HeapFile::update(RID rid, const std::string& record) {
 }
 
 void HeapFile::scan(const std::function<void(RID, std::string_view)>& fn) {
+  scan_while([&](RID rid, std::string_view bytes) {
+    fn(rid, bytes);
+    return true;
+  });
+}
+
+void HeapFile::scan_while(const std::function<bool(RID, std::string_view)>& fn) {
   for (uint32_t p = 0; p < page_count_; ++p) {
     auto page = pool_->fetch(p);
     if (page->is_overflow_page()) continue;
@@ -235,9 +242,9 @@ void HeapFile::scan(const std::function<void(RID, std::string_view)>& fn) {
       const RID rid = make_rid(p, slot);
       if (page->is_overflow(slot)) {
         std::string record;
-        if (read(rid, record)) fn(rid, record);
-      } else {
-        fn(rid, page->get(slot));
+        if (read(rid, record) && !fn(rid, record)) return;
+      } else if (!fn(rid, page->get(slot))) {
+        return;
       }
     }
   }

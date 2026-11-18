@@ -52,13 +52,14 @@ void print_timings(const mvdb::Engine& engine) {
   const mvdb::Engine::Timings& t = engine.timings();
   std::fprintf(stderr,
                "[stats] queries=%llu ann_queries=%llu rows_scanned=%llu avg_ef=%.1f\n"
-               "[stats] select_scan_ms=%.1f select_ann_ms=%.1f commit_ms=%.1f index_build_ms=%.1f\n",
+               "[stats] select_scan_ms=%.1f select_ann_ms=%.1f commit_ms=%.1f index_build_ms=%.1f index_builds=%llu\n",
                static_cast<unsigned long long>(t.queries),
                static_cast<unsigned long long>(t.ann_queries),
                static_cast<unsigned long long>(t.rows_scanned),
                t.ann_queries ? static_cast<double>(t.ann_ef_total) / static_cast<double>(t.ann_queries)
                              : 0.0,
-               t.select_scan_ms, t.select_ann_ms, t.commit_ms, t.index_build_ms);
+               t.select_scan_ms, t.select_ann_ms, t.commit_ms, t.index_build_ms,
+               static_cast<unsigned long long>(t.index_builds));
   std::fprintf(stderr, "[stats] wal_prepare_ms=%.1f wal_sync_ms=%.1f spill_publish_ms=%.1f checkpoint_ms=%.1f\n",
                t.wal_prepare_ms, t.wal_sync_ms, t.spill_publish_ms, t.checkpoint_ms);
   std::fprintf(stderr, "[stats] insert_encode_ms=%.1f insert_heap_ms=%.1f insert_index_ms=%.1f\n",

@@ -2,6 +2,7 @@
 
 #include <charconv>
 #include <cmath>
+#include <cstdlib>
 #include <system_error>
 #include <cctype>
 #include <deque>
@@ -92,6 +93,7 @@ TokenStream tokenize(std::string_view sql) {
   auto is_ident_char = [](char c) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
   };
+  bool terminated = false;
   while (i < n) {
     char c = sql[i];
     if (std::isspace(static_cast<unsigned char>(c))) {
@@ -108,6 +110,12 @@ TokenStream tokenize(std::string_view sql) {
       i = end + 2;
       continue;
     }
+    if (c == ';') {
+      terminated = true;
+      ++i;
+      continue;
+    }
+    if (terminated) syntax_error("unexpected token after statement terminator");
     if (is_ident_start(c)) {
       size_t start = i;
       while (i < n && is_ident_char(sql[i])) ++i;
@@ -214,16 +222,29 @@ TokenStream tokenize(std::string_view sql) {
   return stream;
 }
 
-// Converts a double to float, rejecting overflow and non-finite values.
-float to_float32(double value, const char* what) {
-  if (!std::isfinite(value)) {
-    throw_sql_error(kErrVectorValue, std::string("non-finite value in ") + what);
+// Convert the decimal directly to the storage type to avoid double rounding.
+float parse_coordinate(std::string_view text, size_t& consumed) {
+  const char* first = text.data();
+  const char* last = first + text.size();
+  if (first != last && *first == '+') {
+    ++first;
+    if (first != last && *first == '-') throw_sql_error(kErrIncorrectValue, "invalid vector sign");
   }
-  float f = static_cast<float>(value);
-  if (!std::isfinite(f)) {
-    throw_sql_error(kErrVectorOverflow, std::string("value out of float32 range in ") + what);
+  float value = 0;
+  const auto result = std::from_chars(first, last, value, std::chars_format::general);
+  if (result.ec == std::errc::invalid_argument) {
+    throw_sql_error(kErrIncorrectValue, "expected a vector coordinate");
   }
-  return f;
+  consumed = static_cast<size_t>(result.ptr - text.data());
+  if (result.ec == std::errc::result_out_of_range) {
+    // from_chars reports both overflow and underflow. strtof rounds the
+    // latter to a finite subnormal or signed zero in the process's C locale.
+    const std::string token(text.substr(0, consumed));
+    value = std::strtof(token.c_str(), nullptr);
+    if (!std::isfinite(value)) throw_sql_error(kErrVectorOverflow, "vector coordinate overflow");
+  }
+  if (!std::isfinite(value)) throw_sql_error(kErrVectorValue, "non-finite vector coordinate");
+  return value;
 }
 
 std::vector<float> parse_vector_text(std::string_view text) {
@@ -245,20 +266,9 @@ std::vector<float> parse_vector_text(std::string_view text) {
   };
   skip_space();
   while (i < inner.size()) {
-    const char* first = inner.data() + i;
-    const char* last = inner.data() + inner.size();
-    double value = 0.0;
-    const auto result = std::from_chars(first, last, value, std::chars_format::general);
-    if (result.ec == std::errc::result_out_of_range && result.ptr != first) {
-      if (!parse_double(std::string_view(first, static_cast<size_t>(result.ptr - first)), value)) {
-        throw_sql_error(kErrVectorOverflow, "value out of float32 range in vector literal");
-      }
-    } else if (result.ec != std::errc() || result.ptr == first) {
-      throw_sql_error(kErrIncorrectValue,
-                      "invalid number in vector literal: " + std::string(inner.substr(i, 16)));
-    }
-    out.push_back(to_float32(value, "vector literal"));
-    i = static_cast<size_t>(result.ptr - inner.data());
+    size_t consumed = 0;
+    out.push_back(parse_coordinate(inner.substr(i), consumed));
+    i += consumed;
     skip_space();
     if (i == inner.size()) break;
     if (inner[i] != ',') {
@@ -395,14 +405,16 @@ class Parser {
     std::vector<float> v;
     if (peek().kind != TokenKind::RBracket) {
       while (true) {
-        Value element = parse_numeric_literal();
-        if (element.kind == Value::Kind::Int) {
-          v.push_back(to_float32(static_cast<double>(element.i), "vector literal"));
-        } else if (element.kind == Value::Kind::Float) {
-          v.push_back(to_float32(element.d, "vector literal"));
-        } else {
-          throw_sql_error(kErrIncorrectValue, "invalid element in vector literal");
+        const bool negative = accept(TokenKind::Minus);
+        if (!negative) accept(TokenKind::Plus);
+        if (peek().kind != TokenKind::IntLit && peek().kind != TokenKind::FloatLit) {
+          syntax_error("expected a vector coordinate");
         }
+        size_t consumed = 0;
+        const float value = parse_coordinate(peek().text, consumed);
+        if (consumed != peek().text.size()) syntax_error("invalid vector coordinate");
+        v.push_back(negative ? -value : value);
+        advance();
         if (accept(TokenKind::Comma)) continue;
         break;
       }

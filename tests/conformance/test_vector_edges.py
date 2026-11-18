@@ -13,6 +13,30 @@ BINARY = Path(__file__).resolve().parents[2] / 'build/minivectordb'
 
 
 class VectorEdges(unittest.TestCase):
+    def test_single_rounding_and_projection_roundtrip(self):
+        midpoint_above = '1.0000000596046447753906250001'
+        with tempfile.TemporaryDirectory() as directory:
+            session = Session(BINARY, Path(directory))
+            try:
+                for quoted in (True, False):
+                    with self.subTest(quoted=quoted):
+                        name = 'quoted' if quoted else 'bare'
+                        session.execute(f'CREATE TABLE {name}(id BIGINT PRIMARY KEY,v VECTOR(1))')
+                        def literal(number):
+                            value = f'[{number}]'
+                            return f"'{value}'" if quoted else value
+                        for pk, number in enumerate((midpoint_above, '1', '16777216')):
+                            result = session.execute(f'INSERT INTO {name} VALUES({pk},{literal(number)})')
+                            self.assertTrue(result['ok'], result)
+                        self.assertEqual(session.execute(
+                            f"SELECT id FROM {name} ORDER BY L2_DISTANCE(v,'[1]') LIMIT 1")['rows'], [[1]])
+                        self.assertEqual(session.execute(
+                            f'SELECT v FROM {name} WHERE id=2')['rows'], [[[16777216]]])
+                        big = session.execute(f'INSERT INTO {name} VALUES(3,{literal("18446744073709551616")})')
+                        self.assertTrue(big['ok'], big)
+            finally:
+                session.close()
+
     def test_finite_decimal_underflow_rounds_to_float32_zero(self):
         with tempfile.TemporaryDirectory() as directory:
             session=Session(BINARY,Path(directory))

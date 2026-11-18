@@ -250,6 +250,33 @@ bool BTree::search(int64_t key, RID& rid) {
   return false;
 }
 
+void BTree::scan_range(int64_t low, int64_t high, bool ascending,
+                       const std::function<bool(RID)>& visit) {
+  if (low > high || count_ == 0) return;
+  const auto walk = [&](auto&& self, uint32_t page_id) -> bool {
+    const auto page = pool_->fetch(page_id);
+    const char* data = page->raw();
+    const size_t count = node_count(data);
+    if (node_type(data) == kNodeLeaf) {
+      for (size_t step = 0; step < count; ++step) {
+        const size_t i = ascending ? step : count - 1 - step;
+        const int64_t key = leaf_key(data, i);
+        if (key >= low && key <= high && !visit(leaf_rid(data, i))) return false;
+      }
+    } else {
+      for (size_t step = 0; step <= count; ++step) {
+        const size_t i = ascending ? step : count - step;
+        // Separators bound a child's keys even after deletes empty a leaf.
+        if (i > 0 && internal_key(data, i - 1) > high) continue;
+        if (i < count && internal_key(data, i) <= low) continue;
+        if (!self(self, internal_child(data, i))) return false;
+      }
+    }
+    return true;
+  };
+  walk(walk, root_);
+}
+
 bool BTree::insert_rec(uint32_t page_id, int64_t key, RID rid, Split& out, bool& replaced) {
   auto page = pool_->fetch(page_id);
   char* d = page->raw();

@@ -60,6 +60,7 @@ class Engine {
     double wal_sync_ms = 0.0;
     double spill_publish_ms = 0.0;
     double checkpoint_ms = 0.0;
+    uint64_t index_builds = 0;
     double index_build_ms = 0.0;
     uint64_t rows_scanned = 0;
     uint64_t queries = 0;
@@ -122,7 +123,6 @@ class Engine {
     std::unique_ptr<BTree> pk_index;
     std::unique_ptr<VectorIndex> vec_index;
     // Set when a rollback may have left the graph stale; rebuilt before use.
-    bool vec_dirty = false;
     ScanCache cache;
     ColumnBitmaps bitmaps;
   };
@@ -139,8 +139,12 @@ class Engine {
                                                 const std::vector<Condition>& conds) const;
   // Restrict a primary-key equality to its indexed candidate; the caller
   // still evaluates all prepared conditions, including contradictory ones.
+  enum class ScanOrder { Heap, PrimaryAsc, PrimaryDesc };
   void scan_candidates(TableState& table, const std::vector<PreparedCondition>& prepared,
-                       const std::function<void(RID, std::string_view)>& visit);
+                       const std::function<bool(RID, std::string_view)>& visit,
+                       ScanOrder order = ScanOrder::Heap);
+  size_t mutate_matching_rows(TableState& table, const std::vector<PreparedCondition>& prepared,
+                              const std::function<void(RID, const std::string&)>& mutate);
   bool matches_prepared(const std::vector<PreparedCondition>& prepared,
                         const std::vector<Value>& row) const;
 

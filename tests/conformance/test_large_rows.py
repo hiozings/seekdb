@@ -33,6 +33,61 @@ class LargeRows(unittest.TestCase):
         self.session.proc = None
         self.session.start()
 
+    def io_counter(self, name):
+        lines = Path(f'/proc/{self.session.proc.pid}/io').read_text().splitlines()
+        return int(next(line.split()[1] for line in lines if line.startswith(name + ':')))
+
+    def test_bulk_mutation_buffers_sequential_spool_writes(self):
+        self.execute('CREATE TABLE t(id BIGINT PRIMARY KEY,g BIGINT)')
+        self.execute('INSERT INTO t VALUES ' + ','.join(f'({i},0)' for i in range(5000)))
+        self.execute('BEGIN')
+        before = self.io_counter('syscw')
+        self.assertEqual(self.execute('UPDATE t SET g=1')['affected_rows'], 5000)
+        self.assertLess(self.io_counter('syscw') - before, 250)
+        # Exercise reverse reads followed by another append after statement undo.
+        self.assertFalse(self.session.execute('INSERT INTO t VALUES(5000,7),(0,7)')['ok'])
+        self.execute('INSERT INTO t VALUES(5000,8)')
+        self.execute('ROLLBACK')
+        self.assertEqual(self.execute('SELECT id,g FROM t WHERE id>=4999')['rows'], [[4999,0]])
+
+    def test_large_mutations_spool_row_images_once(self):
+        payload = 'x' * 6000
+        self.execute('CREATE TABLE t(id BIGINT PRIMARY KEY,s VARCHAR(6000))')
+        self.execute('INSERT INTO t VALUES ' + ','.join(
+            f"({i},'{payload}')" for i in range(200)))
+        for mutation in ("UPDATE t SET s='short'", 'DELETE FROM t'):
+            self.execute('BEGIN')
+            before = self.io_counter('wchar')
+            self.assertEqual(self.execute(mutation)['affected_rows'], 200)
+            self.assertLess(self.io_counter('wchar') - before, 2_000_000)
+            self.execute('ROLLBACK')
+            self.assertEqual(self.execute('SELECT s FROM t WHERE id=199')['rows'], [[payload]])
+
+    def test_unordered_limit_stops_reading_overflow_pages(self):
+        self.execute('CREATE TABLE t(id BIGINT PRIMARY KEY,s VARCHAR(20000))')
+        self.execute("INSERT INTO t VALUES(0,'small'),(1,'keep')")
+        payload = 'x' * 16000
+        self.execute('INSERT INTO t VALUES ' + ','.join(
+            f"({i},'{payload}')" for i in range(2, 130)))
+        self.session.restart()
+        before = self.io_counter('rchar')
+        self.assertEqual(self.execute('SELECT id FROM t WHERE id>0 LIMIT 1')['rows'], [[1]])
+        self.assertLess(self.io_counter('rchar') - before, 128 * 1024)
+
+    def test_ordered_primary_key_limit_reads_only_matching_range(self):
+        self.execute('CREATE TABLE t(s VARCHAR(20000),id BIGINT PRIMARY KEY)')
+        payload = 'z' * 16000
+        for start in range(0, 800, 100):
+            self.execute('INSERT INTO t VALUES ' + ','.join(
+                f"('{payload}',{(i * 173) % 800})" for i in range(start, start + 100)))
+        self.session.restart()
+        before = self.io_counter('rchar')
+        for direction, expected in [('DESC', [516, 515]), ('ASC', [513, 514])]:
+            result = self.execute(f'SELECT id AS k FROM t WHERE id>512 AND id<=516 '
+                                  f'ORDER BY k {direction} LIMIT 2')
+            self.assertEqual(result['rows'], [[i] for i in expected])
+        self.assertLess(self.io_counter('rchar') - before, 256 * 1024)
+
     def test_large_varchar_updates_and_restart(self):
         self.execute('CREATE TABLE t (id BIGINT PRIMARY KEY, s VARCHAR(20000))')
         original = '雪' * 10000

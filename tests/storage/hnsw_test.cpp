@@ -70,6 +70,16 @@ int main(int argc, char** argv) {
     std::printf("ef=%4zu recall@10 = %.4f\n", ef, total / kQueries);
   }
 
+  // Updating only a scalar column must refresh the payload without adding a node.
+  index.add(1, data.front(), {mvdb::Value::make_int(42)});
+  const auto refreshed = index.search(data.front(), 1, 64, [](const auto& row) {
+    return !row.empty() && row.front().i == 42;
+  });
+  if (index.tombstones() != 0 || refreshed.size() != 1 || refreshed.front().pk != 1) {
+    std::fprintf(stderr, "scalar update did not preserve the live graph node\n");
+    return 1;
+  }
+
   // Tombstones must not leak into results.
   for (int i = 0; i < 1000; ++i) index.remove(static_cast<int64_t>(i + 1));
   std::vector<float> query(kDim);

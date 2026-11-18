@@ -38,6 +38,8 @@ class HeapFile {
   RID update(RID rid, const std::string& record);
 
   // Streams every live record. The callback must copy anything it retains.
+  // Stop as soon as the visitor returns false.
+  void scan_while(const std::function<bool(RID, std::string_view)>& fn);
   void scan(const std::function<void(RID, std::string_view)>& fn);
 
   // Writes dirty pages back and fsyncs.

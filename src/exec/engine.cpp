@@ -1,5 +1,7 @@
 #include "exec/engine.h"
 
+#include <charconv>
+
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -14,6 +16,7 @@
 #include <set>
 #include <system_error>
 #include <new>
+#include <limits>
 #include <utility>
 
 #include "storage/btree.h"
@@ -447,7 +450,6 @@ bool Engine::vector_index_fits(const TableState& table) const {
 
 void Engine::build_vector_index(TableState& table) {
   table.vec_index.reset();
-  table.vec_dirty = false;
   if (!vector_index_fits(table)) return;  // exact fallback for larger indexes
   const auto started = std::chrono::steady_clock::now();
   const TableMeta& meta = table.meta;
@@ -468,7 +470,7 @@ void Engine::build_vector_index(TableState& table) {
     const std::vector<float> vec = row[static_cast<size_t>(meta.vector_column)].v;
     table.vec_index->add(pk, vec, std::move(row));
   });
-  table.vec_dirty = false;
+  ++timings_.index_builds;
   timings_.index_build_ms +=
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
 }
@@ -571,21 +573,43 @@ std::vector<PreparedCondition> Engine::prepare_filter(const TableMeta& meta,
 }
 
 void Engine::scan_candidates(TableState& table, const std::vector<PreparedCondition>& prepared,
-                             const std::function<void(RID, std::string_view)>& visit) {
+                             const std::function<bool(RID, std::string_view)>& visit, ScanOrder order) {
+  const auto read_candidate = [&](RID rid) {
+    std::string record;
+    if (!table.heap->read(rid, record)) {
+      throw_sql_error(kErrInternal, "primary-key index points to a missing row");
+    }
+    return visit(rid, record);
+  };
+  int64_t low = std::numeric_limits<int64_t>::min();
+  int64_t high = std::numeric_limits<int64_t>::max();
   for (const auto& condition : prepared) {
-    if (condition.column == table.meta.pk_index && condition.op == Condition::Op::Eq) {
-      RID rid = kInvalidRid;
-      if (table.pk_index->search(condition.value.i, rid)) {
-        std::string record;
-        if (!table.heap->read(rid, record)) {
-          throw_sql_error(kErrInternal, "primary-key index points to a missing row");
-        }
-        visit(rid, record);
+    if (condition.column != table.meta.pk_index) continue;
+    const int64_t key = condition.value.i;
+    switch (condition.op) {
+      case Condition::Op::Eq: {
+        RID rid = kInvalidRid;
+        if (table.pk_index->search(key, rid)) read_candidate(rid);
+        return;
       }
-      return;
+      case Condition::Op::Lt:
+        if (key == std::numeric_limits<int64_t>::min()) return;
+        high = std::min(high, key - 1);
+        break;
+      case Condition::Op::Le: high = std::min(high, key); break;
+      case Condition::Op::Gt:
+        if (key == std::numeric_limits<int64_t>::max()) return;
+        low = std::max(low, key + 1);
+        break;
+      case Condition::Op::Ge: low = std::max(low, key); break;
     }
   }
-  table.heap->scan(visit);
+  if (low > high) return;
+  if (order != ScanOrder::Heap) {
+    table.pk_index->scan_range(low, high, order == ScanOrder::PrimaryAsc, read_candidate);
+    return;
+  }
+  table.heap->scan_while(visit);
 }
 
 bool Engine::matches_prepared(const std::vector<PreparedCondition>& prepared,
@@ -828,27 +852,37 @@ ResultSet Engine::exec_insert(const Statement& stmt) {
   return rs;
 }
 
+size_t Engine::mutate_matching_rows(TableState& table, const std::vector<PreparedCondition>& prepared,
+                                    const std::function<void(RID, const std::string&)>& mutate) {
+  // Freeze the target slots before any update can relocate a row. Other live
+  // slots retain their RIDs during compaction, so the spool needs no row images.
+  RecordSpool targets(data_dir_);
+  scan_candidates(table, prepared, [&](RID rid, std::string_view bytes) {
+    if (!prepared.empty()) {
+      std::vector<Value> row;
+      if (!decode_row(table.meta, bytes, row)) throw_sql_error(kErrInternal, "invalid target row");
+      if (!matches_prepared(prepared, row)) return true;
+    }
+    targets.append(std::string_view(reinterpret_cast<const char*>(&rid), sizeof(rid)));
+    return true;
+  });
+  std::string record;
+  targets.for_each([&](std::string_view target) {
+    RID rid;
+    std::memcpy(&rid, target.data(), sizeof(rid));
+    if (!table.heap->read(rid, record)) throw_sql_error(kErrInternal, "missing target row");
+    mutate(rid, record);
+  });
+  return targets.size();
+}
+
 ResultSet Engine::exec_delete(const Statement& stmt) {
   TableState& table = require_table(stmt.table);
-  RecordSpool victims(data_dir_);
   const auto prepared = stmt.has_where ? prepare_filter(table.meta, stmt.where)
                                        : std::vector<PreparedCondition>{};
-  scan_candidates(table, prepared, [&](RID rid, std::string_view bytes) {
-    std::vector<Value> row;
-    if (!decode_row(table.meta, bytes, row)) return;
-    if (!matches_prepared(prepared, row)) return;
-    std::string target(reinterpret_cast<const char*>(&rid), sizeof(rid));
-    const int64_t pk = row[table.meta.pk_index].i;
-    target.append(reinterpret_cast<const char*>(&pk), sizeof(pk));
-    target.append(bytes);
-    victims.append(target);
-  });
-  victims.for_each([&](std::string_view target) {
-    RID rid;
-    int64_t pk;
-    std::memcpy(&rid, target.data(), sizeof(rid));
-    std::memcpy(&pk, target.data()+sizeof(rid), sizeof(pk));
-    std::string record(target.substr(sizeof(rid)+sizeof(pk)));
+  const size_t count = mutate_matching_rows(table, prepared, [&](RID rid, const std::string& record) {
+    int64_t pk = 0;
+    if (!decode_primary_key(table.meta, record, pk)) throw_sql_error(kErrInternal, "invalid target key");
     table.heap->erase(rid);
     table.pk_index->erase(pk);
     invalidate_cache(table);
@@ -857,7 +891,7 @@ ResultSet Engine::exec_delete(const Statement& stmt) {
   });
   ResultSet rs;
   rs.has_affected_rows = true;
-  rs.affected_rows = static_cast<int64_t>(victims.size());
+  rs.affected_rows = static_cast<int64_t>(count);
   return rs;
 }
 
@@ -876,49 +910,27 @@ ResultSet Engine::exec_update(const Statement& stmt) {
     assignments.push_back(Assignment{idx, coerce(table.meta, idx, item.second)});
   }
 
-  RecordSpool targets(data_dir_);
   const auto prepared = stmt.has_where ? prepare_filter(table.meta, stmt.where)
                                        : std::vector<PreparedCondition>{};
-  scan_candidates(table, prepared, [&](RID rid, std::string_view bytes) {
-    std::vector<Value> row;
-    if (!decode_row(table.meta, bytes, row)) return;
-    if (!matches_prepared(prepared, row)) return;
-    const int64_t pk = row[table.meta.pk_index].i;
-    const uint64_t old_size = bytes.size();
-    std::string target(reinterpret_cast<const char*>(&rid), sizeof(rid));
-    target.append(reinterpret_cast<const char*>(&pk), sizeof(pk));
-    target.append(reinterpret_cast<const char*>(&old_size), sizeof(old_size));
-    target.append(bytes);
-    for (const Assignment& assignment : assignments) row[assignment.column] = assignment.value;
-    target.append(encode_row(table.meta, row));
-    targets.append(target);
-  });
-  targets.for_each([&](std::string_view target) {
-    RID rid;
-    int64_t pk;
-    uint64_t old_size;
-    size_t pos = 0;
-    std::memcpy(&rid, target.data()+pos, sizeof(rid)); pos += sizeof(rid);
-    std::memcpy(&pk, target.data()+pos, sizeof(pk)); pos += sizeof(pk);
-    std::memcpy(&old_size, target.data()+pos, sizeof(old_size)); pos += sizeof(old_size);
-    const std::string old_record(target.substr(pos, old_size));
-    const std::string encoded(target.substr(pos+old_size));
+  const size_t count = mutate_matching_rows(table, prepared, [&](RID rid, const std::string& old_record) {
+    std::vector<Value> values;
+    if (!decode_row(table.meta, old_record, values)) throw_sql_error(kErrInternal, "invalid target row");
+    const int64_t pk = values[table.meta.pk_index].i;
+    for (const Assignment& assignment : assignments) values[assignment.column] = assignment.value;
+    const std::string encoded = encode_row(table.meta, values);
     const RID new_rid = table.heap->update(rid, encoded);
     if (new_rid == kInvalidRid) throw_sql_error(kErrInternal, "cannot allocate space for updated row");
-    table.pk_index->insert(pk, new_rid);
+    if (new_rid != rid) table.pk_index->insert(pk, new_rid);
     invalidate_cache(table);
     if (table.vec_index && !vector_index_fits(table)) table.vec_index.reset();
     if (table.vec_index) {
-      std::vector<Value> values;
-      if (!decode_row(table.meta, encoded, values)) throw_sql_error(kErrInternal, "invalid staged row");
-      table.vec_index->remove(pk);
       table.vec_index->add(pk, values[static_cast<size_t>(table.meta.vector_column)].v, values);
     }
     undo_.push_back(UndoOp{UndoOp::Kind::UpdatedRow, table.meta.id, pk, new_rid, old_record});
   });
   ResultSet rs;
   rs.has_affected_rows = true;
-  rs.affected_rows = static_cast<int64_t>(targets.size());
+  rs.affected_rows = static_cast<int64_t>(count);
   return rs;
 }
 
@@ -1081,7 +1093,7 @@ ResultSet Engine::exec_select(const Statement& stmt) {
       }
     } ann_timer{&timings_, ann_started};
     ++timings_.ann_queries;
-    if (!table.vec_index || table.vec_dirty) build_vector_index(table);
+    if (!table.vec_index) build_vector_index(table);
     const size_t k = static_cast<size_t>(stmt.limit);
     // Coarse ranking: pull more candidates from the graph than we return, then
     // let the exact re-rank below pick the final k. This trades a wider graph
@@ -1277,41 +1289,53 @@ ResultSet Engine::exec_select(const Statement& stmt) {
             .count();
   }
 
-  if (!used_ann && !used_fast && (!stmt.has_limit || stmt.limit != 0))
+  ScanOrder scan_order = ScanOrder::Heap;
+  if (stmt.has_limit && !sort_keys.empty() &&
+      std::all_of(prepared.begin(), prepared.end(), [&](const auto& condition) {
+        return condition.column == meta.pk_index;
+      })) {
+    const auto& first = sort_keys.front();
+    const bool primary = first.out_index >= 0
+        ? !specs[first.out_index].is_distance && specs[first.out_index].table_index == meta.pk_index
+        : extra_columns[first.extra_index] == meta.pk_index;
+    if (primary) scan_order = first.asc ? ScanOrder::PrimaryAsc : ScanOrder::PrimaryDesc;
+  }
+  const bool needs_sort = !sort_keys.empty() && scan_order == ScanOrder::Heap;
+  if (!used_ann && !used_fast && (!stmt.has_limit || stmt.limit != 0)) {
     scan_candidates(table, prepared, [&](RID rid, std::string_view bytes) {
-    if (stmt.has_limit && (stmt.limit == 0 ||
-        (sort_keys.empty() && out_rows.size() >= static_cast<size_t>(stmt.limit)))) return;
-    ++timings_.rows_scanned;
-    std::vector<Value> row;
-    if (!decode_row(meta, bytes, row)) return;
-    if (!prepared.empty() && !matches_prepared(prepared, row)) return;
-    OutRow out;
-    out.pk = row[meta.pk_index].i;
-    out.raw.reserve(specs.size());
-    for (const OutputSpec& spec : specs) {
-      if (spec.is_distance) {
-        Value v;
-        v.kind = Value::Kind::Float;
-        v.d = l2_distance(row[spec.table_index].v, spec.query);
-        out.raw.push_back(std::move(v));
+      ++timings_.rows_scanned;
+      std::vector<Value> row;
+      if (!decode_row(meta, bytes, row)) return true;
+      if (!prepared.empty() && !matches_prepared(prepared, row)) return true;
+      OutRow out;
+      out.pk = row[meta.pk_index].i;
+      out.raw.reserve(specs.size());
+      for (const OutputSpec& spec : specs) {
+        if (spec.is_distance) {
+          Value v;
+          v.kind = Value::Kind::Float;
+          v.d = l2_distance(row[spec.table_index].v, spec.query);
+          out.raw.push_back(std::move(v));
+        } else {
+          out.raw.push_back(row[spec.table_index]);
+        }
+      }
+      for (size_t column : extra_columns) out.extras.push_back(row[column]);
+      if (stmt.has_limit && needs_sort) {
+        if (out_rows.size() < static_cast<size_t>(stmt.limit)) {
+          out_rows.push_back(std::move(out));
+          std::push_heap(out_rows.begin(), out_rows.end(), row_less);
+        } else if (row_less(out, out_rows.front())) {
+          std::pop_heap(out_rows.begin(), out_rows.end(), row_less);
+          out_rows.back() = std::move(out);
+          std::push_heap(out_rows.begin(), out_rows.end(), row_less);
+        }
       } else {
-        out.raw.push_back(row[spec.table_index]);
-      }
-    }
-    for (size_t column : extra_columns) out.extras.push_back(row[column]);
-    if (stmt.has_limit && !sort_keys.empty()) {
-      if (out_rows.size() < static_cast<size_t>(stmt.limit)) {
         out_rows.push_back(std::move(out));
-        std::push_heap(out_rows.begin(), out_rows.end(), row_less);
-      } else if (row_less(out, out_rows.front())) {
-        std::pop_heap(out_rows.begin(), out_rows.end(), row_less);
-        out_rows.back() = std::move(out);
-        std::push_heap(out_rows.begin(), out_rows.end(), row_less);
       }
-    } else {
-      out_rows.push_back(std::move(out));
-    }
-  });
+      return !stmt.has_limit || needs_sort || out_rows.size() < static_cast<size_t>(stmt.limit);
+    }, scan_order);
+  }
   if (!used_ann && !used_fast) {
     timings_.select_scan_ms +=
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - scan_started)
@@ -1319,7 +1343,7 @@ ResultSet Engine::exec_select(const Statement& stmt) {
   }
   ++timings_.queries;
 
-  if (!sort_keys.empty()) {
+  if (needs_sort) {
     std::sort(out_rows.begin(), out_rows.end(), row_less);
   }
 
@@ -1378,7 +1402,9 @@ std::string Engine::format_value(const Value& value, ColumnType type) const {
         std::string out = "[";
         for (size_t i = 0; i < value.v.size(); ++i) {
           if (i != 0) out += ",";
-          out += format_double(static_cast<double>(value.v[i]), "%g");
+          char buffer[64];
+          const auto result = std::to_chars(buffer, buffer + sizeof(buffer), value.v[i]);
+          out.append(buffer, result.ptr);
         }
         out += "]";
         return out;
@@ -1416,18 +1442,22 @@ void Engine::rollback_to(size_t mark) {
       table.meta.has_vector_index = false;
       table.meta.vector_column = -1;
       table.vec_index.reset();
-      table.vec_dirty = false;
       undo_.pop_back();
       continue;
     }
     invalidate_cache(table);
-    if (table.vec_index) table.vec_dirty = true;
+    // Rebuild once on demand when undoing a bulk change is cheaper than
+    // repairing every link. Small rollbacks update only the affected nodes.
+    if (table.vec_index && undo_.size() - mark > std::max<size_t>(32, table.vec_index->size() / 4)) {
+      table.vec_index.reset();
+    }
     switch (op.kind) {
       case UndoOp::Kind::InsertedRow: {
         // Later undo operations may have restored this key at a new RID.
         RID current = kInvalidRid;
         if (table.pk_index->search(op.pk, current)) table.heap->erase(current);
         table.pk_index->erase(op.pk);
+        if (table.vec_index) table.vec_index->remove(op.pk);
         break;
       }
       case UndoOp::Kind::DeletedRow:
@@ -1437,7 +1467,16 @@ void Engine::rollback_to(size_t mark) {
           if (table.pk_index->search(op.pk, current)) table.heap->erase(current);
         }
         const RID restored = table.heap->insert(op.record);
-        if (restored != kInvalidRid) table.pk_index->insert(op.pk, restored);
+        if (restored == kInvalidRid) throw std::system_error(EIO, std::generic_category(), "restore row during undo");
+        table.pk_index->insert(op.pk, restored);
+        if (table.vec_index && !vector_index_fits(table)) table.vec_index.reset();
+        if (table.vec_index) {
+          std::vector<Value> values;
+          if (!decode_row(table.meta, op.record, values)) {
+            throw std::system_error(EIO, std::generic_category(), "decode restored vector row");
+          }
+          table.vec_index->add(op.pk, values[static_cast<size_t>(table.meta.vector_column)].v, values);
+        }
         break;
       }
       case UndoOp::Kind::CreatedTable:
